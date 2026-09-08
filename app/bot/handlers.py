@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Router
@@ -8,16 +10,13 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from app.database.connection import AsyncSessionLocal
 from app.database.models import Product
 from app.services.products import (
     get_active_product_by_id,
-    get_products_by_category,
-    get_product_variants,
     get_products,
+    get_products_by_category,
     search_products,
 )
 
@@ -26,19 +25,10 @@ router = Router()
 
 
 # ==========================================================
-# CONSTANTS
+# SETTINGS
 # ==========================================================
 
 PRODUCT_LIMIT = 30
-
-
-CATEGORY_NAMES = {
-    "iphone": "🍎 آیفون",
-    "samsung": "📱 سامسونگ",
-    "xiaomi": "🔵 شیائومی",
-    "other": "📲 سایر برندها",
-    "used": "♻️ گوشی‌های کارکرده",
-}
 
 
 # ==========================================================
@@ -47,7 +37,7 @@ CATEGORY_NAMES = {
 
 def format_price(value) -> str:
     """
-    Format product price for Telegram display.
+    Format product price for Telegram.
     """
 
     if value is None:
@@ -62,6 +52,21 @@ def format_price(value) -> str:
         return "تماس برای قیمت"
 
     return f"{price:,.0f} تومان"
+
+
+def parse_callback_id(callback_data: str | None) -> int | None:
+    """
+    Safely extract integer ID from callback data.
+    """
+
+    if not callback_data:
+        return None
+
+    try:
+        value = callback_data.split(":", 1)[1]
+        return int(value)
+    except (IndexError, ValueError, TypeError):
+        return None
 
 
 def condition_text(condition) -> str:
@@ -80,53 +85,12 @@ def condition_text(condition) -> str:
     return str(value or "نامشخص")
 
 
-def safe_product_id(callback_data: str | None) -> int | None:
-    """
-    Safely extract product ID from callback data.
-    """
-
-    if not callback_data:
-        return None
-
-    try:
-        value = callback_data.split(":", 1)[1]
-        product_id = int(value)
-
-        if product_id <= 0:
-            return None
-
-        return product_id
-
-    except (ValueError, IndexError):
-        return None
-
-
-def safe_variant_id(callback_data: str | None) -> int | None:
-    """
-    Safely extract variant ID from callback data.
-    """
-
-    if not callback_data:
-        return None
-
-    try:
-        value = callback_data.split(":", 2)[2]
-        variant_id = int(value)
-
-        if variant_id <= 0:
-            return None
-
-        return variant_id
-
-    except (ValueError, IndexError):
-        return None
-
-
 # ==========================================================
 # MAIN MENU
 # ==========================================================
 
 def main_menu() -> InlineKeyboardMarkup:
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -188,6 +152,7 @@ def main_menu() -> InlineKeyboardMarkup:
 # ==========================================================
 
 def shop_menu() -> InlineKeyboardMarkup:
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -237,43 +202,7 @@ def shop_menu() -> InlineKeyboardMarkup:
 
 
 # ==========================================================
-# GENERIC BACK MENU
-# ==========================================================
-
-def back_home_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔙 منوی اصلی",
-                    callback_data="home",
-                )
-            ]
-        ]
-    )
-
-
-def shop_back_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔙 فروشگاه",
-                    callback_data="shop",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🏠 منوی اصلی",
-                    callback_data="home",
-                )
-            ],
-        ]
-    )
-
-
-# ==========================================================
-# PRODUCT LIST MENU
+# PRODUCT LIST KEYBOARD
 # ==========================================================
 
 def product_list_keyboard(
@@ -281,7 +210,7 @@ def product_list_keyboard(
     back_callback: str = "shop",
 ) -> InlineKeyboardMarkup:
 
-    buttons = []
+    buttons: list[list[InlineKeyboardButton]] = []
 
     for product in products:
 
@@ -312,7 +241,7 @@ def product_list_keyboard(
 
 
 # ==========================================================
-# PRODUCT DETAIL MENU
+# PRODUCT DETAIL KEYBOARD
 # ==========================================================
 
 def product_detail_keyboard(
@@ -349,6 +278,44 @@ def product_detail_keyboard(
                     text="🔙 بازگشت",
                     callback_data=back_callback,
                 ),
+            ],
+        ]
+    )
+
+
+# ==========================================================
+# EMPTY / ERROR KEYBOARDS
+# ==========================================================
+
+def home_keyboard() -> InlineKeyboardMarkup:
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏠 منوی اصلی",
+                    callback_data="home",
+                )
+            ]
+        ]
+    )
+
+
+def shop_back_keyboard() -> InlineKeyboardMarkup:
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔙 فروشگاه",
+                    callback_data="shop",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏠 منوی اصلی",
+                    callback_data="home",
+                )
             ],
         ]
     )
@@ -413,7 +380,7 @@ async def help_handler(message: Message):
         "/start - شروع کار\n"
         "/menu - منوی اصلی\n"
         "/help - راهنما\n\n"
-        "برای خرید یا مشاوره از منوی اصلی استفاده کن.",
+        "برای خرید یا مشاوره از منوی اصلی استفاده کن."
     )
 
 
@@ -424,7 +391,9 @@ async def help_handler(message: Message):
 @router.callback_query(
     lambda callback: callback.data == "shop"
 )
-async def shop_handler(callback: CallbackQuery):
+async def shop_handler(
+    callback: CallbackQuery,
+):
 
     await callback.answer()
 
@@ -451,38 +420,30 @@ async def category_handler(
 
     await callback.answer()
 
-    category = callback.data.split(
-        ":",
-        1,
-    )[1]
+    category = callback.data.split(":", 1)[1].strip()
 
-    title = CATEGORY_NAMES.get(
+    category_names = {
+        "iphone": "🍎 آیفون",
+        "samsung": "📱 سامسونگ",
+        "xiaomi": "🔵 شیائومی",
+        "other": "📲 سایر برندها",
+        "used": "♻️ گوشی‌های کارکرده",
+    }
+
+    title = category_names.get(
         category,
         "📱 محصولات",
     )
 
-    try:
+    async with AsyncSessionLocal() as db:
 
         products = await get_products_by_category(
-            category=category,
+            db,
+            category,
+            skip=0,
             limit=PRODUCT_LIMIT,
-            offset=0,
             active_only=True,
         )
-
-    except Exception as exc:
-
-        print(
-            f"Category handler error: {type(exc).__name__}: {exc}"
-        )
-
-        await callback.message.edit_text(
-            "❌ خطایی هنگام دریافت محصولات رخ داد.\n\n"
-            "لطفاً دوباره تلاش کن.",
-            reply_markup=shop_back_keyboard(),
-        )
-
-        return
 
     if not products:
 
@@ -523,27 +484,20 @@ async def featured_handler(
 
     await callback.answer()
 
-    try:
+    async with AsyncSessionLocal() as db:
 
         products = await get_products(
+            db,
+            skip=0,
             limit=PRODUCT_LIMIT,
-            offset=0,
             active_only=True,
-            featured_only=True,
         )
 
-    except Exception as exc:
-
-        print(
-            f"Featured handler error: {type(exc).__name__}: {exc}"
-        )
-
-        await callback.message.edit_text(
-            "❌ خطایی هنگام دریافت محصولات ویژه رخ داد.",
-            reply_markup=shop_back_keyboard(),
-        )
-
-        return
+    products = [
+        product
+        for product in products
+        if product.is_featured
+    ]
 
     if not products:
 
@@ -557,13 +511,7 @@ async def featured_handler(
                             text="🔙 فروشگاه",
                             callback_data="shop",
                         )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="🏠 منوی اصلی",
-                            callback_data="home",
-                        )
-                    ],
+                    ]
                 ]
             ),
         )
@@ -596,7 +544,7 @@ async def product_handler(
 
     await callback.answer()
 
-    product_id = safe_product_id(
+    product_id = parse_callback_id(
         callback.data
     )
 
@@ -609,148 +557,100 @@ async def product_handler(
 
         return
 
-    try:
+    async with AsyncSessionLocal() as db:
 
         product = await get_active_product_by_id(
-            product_id
+            db,
+            product_id,
         )
 
-    except Exception as exc:
+        if product is None:
 
-        print(
-            f"Product handler error: {type(exc).__name__}: {exc}"
+            await callback.message.edit_text(
+                "❌ محصول پیدا نشد.",
+                reply_markup=shop_back_keyboard(),
+            )
+
+            return
+
+        price_text = format_price(
+            product.base_price
         )
 
-        await callback.message.edit_text(
-            "❌ خطایی هنگام دریافت اطلاعات محصول رخ داد.",
-            reply_markup=shop_back_keyboard(),
+        condition = condition_text(
+            product.condition
         )
 
-        return
-
-    if product is None:
-
-        await callback.message.edit_text(
-            "❌ محصول پیدا نشد یا در حال حاضر فعال نیست.",
-            reply_markup=shop_back_keyboard(),
+        text = (
+            f"📱 {product.brand} {product.model}\n\n"
+            f"🏷️ کد محصول: {product.sku}\n"
+            f"📦 وضعیت: {condition}\n"
+            f"💰 قیمت: {price_text}\n\n"
         )
 
-        return
+        if product.short_description:
 
-    # ------------------------------------------------------
-    # VARIANTS
-    # ------------------------------------------------------
+            text += (
+                f"📝 {product.short_description}\n\n"
+            )
 
-    try:
+        if product.description:
 
-        variants = await get_product_variants(
-            product_id=product.id,
-            active_only=True,
-        )
+            text += (
+                "📋 توضیحات:\n"
+                f"{product.description}\n\n"
+            )
 
-    except Exception as exc:
+        active_variants = [
+            variant
+            for variant in product.variants
+            if variant.is_active
+        ]
 
-        print(
-            f"Variant loading error: {type(exc).__name__}: {exc}"
-        )
+        if active_variants:
 
-        variants = []
+            text += "⚙️ مشخصات موجود:\n\n"
 
-    # ------------------------------------------------------
-    # PRICE
-    # ------------------------------------------------------
+            for variant in active_variants:
 
-    price_text = format_price(
-        product.base_price
-    )
+                parts: list[str] = []
 
-    # ------------------------------------------------------
-    # CONDITION
-    # ------------------------------------------------------
-
-    condition = condition_text(
-        product.condition
-    )
-
-    # ------------------------------------------------------
-    # TEXT
-    # ------------------------------------------------------
-
-    text = (
-        f"📱 {product.brand} {product.model}\n\n"
-        f"🏷️ کد محصول: {product.sku}\n"
-        f"📦 وضعیت: {condition}\n"
-        f"💰 قیمت پایه: {price_text}\n\n"
-    )
-
-    if product.short_description:
-
-        text += (
-            f"📝 {product.short_description}\n\n"
-        )
-
-    if product.description:
-
-        text += (
-            "📋 توضیحات:\n"
-            f"{product.description}\n\n"
-        )
-
-    # ------------------------------------------------------
-    # VARIANTS
-    # ------------------------------------------------------
-
-    if variants:
-
-        text += "⚙️ مشخصات موجود:\n\n"
-
-        for variant in variants:
-
-            parts = []
-
-            if variant.storage:
-
-                parts.append(
-                    f"💾 {variant.storage}"
-                )
-
-            if variant.ram:
-
-                parts.append(
-                    f"🧠 RAM {variant.ram}"
-                )
-
-            if variant.color:
-
-                parts.append(
-                    f"🎨 {variant.color}"
-                )
-
-            if variant.price:
-
-                variant_price = format_price(
-                    variant.price
-                )
-
-                if variant_price != "تماس برای قیمت":
+                if variant.storage:
 
                     parts.append(
-                        f"💰 {variant_price}"
+                        f"💾 {variant.storage}"
                     )
 
-            if parts:
+                if variant.ram:
 
-                text += (
-                    " • ".join(parts)
-                    + "\n"
-                )
+                    parts.append(
+                        f"🧠 RAM {variant.ram}"
+                    )
 
-    else:
+                if variant.color:
 
-        text += (
-            "⚙️ نسخه یا ظرفیت دیگری برای این محصول "
-            "ثبت نشده است.\n\n"
-        )
+                    parts.append(
+                        f"🎨 {variant.color}"
+                    )
+
+                if variant.price is not None:
+
+                    variant_price = format_price(
+                        variant.price
+                    )
+
+                    if variant_price != "تماس برای قیمت":
+
+                        parts.append(
+                            f"💰 {variant_price}"
+                        )
+
+                if parts:
+
+                    text += (
+                        " • ".join(parts)
+                        + "\n"
+                    )
 
     await callback.message.edit_text(
         text,
@@ -782,6 +682,74 @@ async def home_handler(
 
 
 # ==========================================================
+# PLACEHOLDER ACTIONS
+# ==========================================================
+
+@router.callback_query(
+    lambda callback: (
+        callback.data
+        and callback.data.startswith("cart:add:")
+    )
+)
+async def add_to_cart_handler(
+    callback: CallbackQuery,
+):
+
+    await callback.answer(
+        "🛒 سیستم سبد خرید در حال اتصال است.",
+        show_alert=True,
+    )
+
+
+@router.callback_query(
+    lambda callback: (
+        callback.data
+        and callback.data.startswith("favorite:")
+    )
+)
+async def favorite_handler(
+    callback: CallbackQuery,
+):
+
+    await callback.answer(
+        "❤️ سیستم علاقه‌مندی‌ها در حال اتصال است.",
+        show_alert=True,
+    )
+
+
+@router.callback_query(
+    lambda callback: (
+        callback.data
+        and callback.data.startswith("compare:add:")
+    )
+)
+async def compare_handler(
+    callback: CallbackQuery,
+):
+
+    await callback.answer(
+        "⚖️ سیستم مقایسه در حال اتصال است.",
+        show_alert=True,
+    )
+
+
+@router.callback_query(
+    lambda callback: (
+        callback.data
+        and callback.data.startswith("alert:")
+    )
+)
+async def alert_handler(
+    callback: CallbackQuery,
+):
+
+    await callback.answer(
+        "🔔 سیستم هشدار قیمت در حال اتصال است.",
+        show_alert=True,
+    )
+
+
+# ==========================================================
 # SEARCH
 # ==========================================================
 
@@ -796,12 +764,63 @@ async def search_handler(
 
     await callback.message.edit_text(
         "🔎 جستجوی گوشی\n\n"
-        "نام برند یا مدل گوشی را برای جستجو ارسال کن.\n\n"
-        "مثلاً:\n"
-        "• iPhone 15\n"
-        "• Samsung S24\n"
-        "• Xiaomi 14",
-        reply_markup=back_home_keyboard(),
+        "برای جستجو، نام برند یا مدل گوشی را ارسال کن.\n\n"
+        "مثال:\n"
+        "iPhone 15\n"
+        "Samsung S24\n"
+        "Xiaomi Redmi",
+        reply_markup=home_keyboard(),
+    )
+
+
+# ==========================================================
+# SEARCH TEXT
+# ==========================================================
+
+@router.message()
+async def text_search_handler(
+    message: Message,
+):
+
+    if not message.text:
+        return
+
+    query = message.text.strip()
+
+    if not query:
+        return
+
+    if query.startswith("/"):
+        return
+
+    async with AsyncSessionLocal() as db:
+
+        products = await search_products(
+            db,
+            query,
+            limit=PRODUCT_LIMIT,
+            active_only=True,
+        )
+
+    if not products:
+
+        await message.answer(
+            f"🔎 نتیجه جستجو برای «{query}»\n\n"
+            "❌ محصولی پیدا نشد.\n\n"
+            "نام برند یا مدل دیگری را امتحان کن.",
+            reply_markup=main_menu(),
+        )
+
+        return
+
+    await message.answer(
+        f"🔎 نتایج جستجو برای «{query}»\n\n"
+        f"تعداد نتایج: {len(products)}\n\n"
+        "محصول موردنظر را انتخاب کن 👇",
+        reply_markup=product_list_keyboard(
+            products,
+            "home",
+        ),
     )
 
 
@@ -821,10 +840,8 @@ async def advisor_handler(
     await callback.message.edit_text(
         "🧠 مشاور خرید VIRA MOBILE\n\n"
         "در این بخش بر اساس بودجه، کاربرد، دوربین، "
-        "باتری، بازی و نیازت بهترین گزینه‌ها پیشنهاد می‌شوند.\n\n"
-        "سیستم مشاور خرید در مرحله بعد به موتور "
-        "پیشنهاد محصول متصل خواهد شد.",
-        reply_markup=back_home_keyboard(),
+        "باتری، بازی و نیازت بهترین گزینه‌ها پیشنهاد می‌شوند.",
+        reply_markup=home_keyboard(),
     )
 
 
@@ -878,59 +895,10 @@ async def prices_handler(
 
     await callback.answer()
 
-    try:
-
-        products = await get_products(
-            limit=PRODUCT_LIMIT,
-            offset=0,
-            active_only=True,
-        )
-
-    except Exception as exc:
-
-        print(
-            f"Prices handler error: {type(exc).__name__}: {exc}"
-        )
-
-        await callback.message.edit_text(
-            "❌ خطایی هنگام دریافت قیمت‌ها رخ داد.",
-            reply_markup=shop_back_keyboard(),
-        )
-
-        return
-
-    if not products:
-
-        await callback.message.edit_text(
-            "💰 قیمت‌های VIRA MOBILE\n\n"
-            "در حال حاضر محصولی برای نمایش قیمت ثبت نشده است.",
-            reply_markup=shop_back_keyboard(),
-        )
-
-        return
-
-    text = (
-        "💰 قیمت‌های VIRA MOBILE\n\n"
-        "آخرین قیمت محصولات ثبت‌شده:\n\n"
-    )
-
-    for index, product in enumerate(
-        products,
-        start=1,
-    ):
-
-        price = format_price(
-            product.base_price
-        )
-
-        text += (
-            f"{index}. "
-            f"{product.brand} {product.model}\n"
-            f"   💰 {price}\n\n"
-        )
-
     await callback.message.edit_text(
-        text,
+        "💰 قیمت‌های VIRA MOBILE\n\n"
+        "قیمت محصولات مستقیماً از دیتابیس فروشگاه "
+        "خوانده می‌شود.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -966,10 +934,8 @@ async def tradein_handler(
     await callback.message.edit_text(
         "🔄 تعویض گوشی\n\n"
         "در این بخش مشخصات گوشی فعلی را ثبت می‌کنی "
-        "تا ارزش تقریبی آن برای تعویض محاسبه شود.\n\n"
-        "سامانه ارزیابی و تعویض گوشی در مرحله بعد "
-        "فعال خواهد شد.",
-        reply_markup=back_home_keyboard(),
+        "تا ارزش تقریبی آن برای تعویض محاسبه شود.",
+        reply_markup=home_keyboard(),
     )
 
 
@@ -990,7 +956,7 @@ async def installment_handler(
         "💳 خرید اقساطی\n\n"
         "سیستم خرید اقساطی VIRA MOBILE "
         "در حال آماده‌سازی است.",
-        reply_markup=back_home_keyboard(),
+        reply_markup=home_keyboard(),
     )
 
 
@@ -1009,9 +975,7 @@ async def cart_handler(
 
     await callback.message.edit_text(
         "🛒 سبد خرید\n\n"
-        "سبد خرید شما در حال حاضر خالی است.\n\n"
-        "پس از فعال شدن سیستم سبد خرید، "
-        "محصولات انتخاب‌شده در این بخش نمایش داده می‌شوند.",
+        "سبد خرید شما در حال حاضر خالی است.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -1046,26 +1010,13 @@ async def profile_handler(
 
     user = callback.from_user
 
-    first_name = (
-        user.first_name
-        if user.first_name
-        else "-"
-    )
-
-    username = (
-        f"@{user.username}"
-        if user.username
-        else "ثبت نشده"
-    )
-
     await callback.message.edit_text(
         "👤 حساب کاربری\n\n"
-        f"نام: {first_name}\n"
-        f"نام کاربری: {username}\n"
+        f"نام: {user.first_name or '-'}\n"
         f"شناسه تلگرام: {user.id}\n\n"
-        "اطلاعات مشتری در سیستم مرکزی "
-        "VIRA MOBILE مدیریت خواهد شد.",
-        reply_markup=back_home_keyboard(),
+        "اطلاعات مشتری در سیستم مرکزی VIRA MOBILE "
+        "مدیریت خواهد شد.",
+        reply_markup=home_keyboard(),
     )
 
 
@@ -1084,155 +1035,6 @@ async def orders_handler(
 
     await callback.message.edit_text(
         "📦 سفارش‌های من\n\n"
-        "هنوز سفارشی برای این حساب ثبت نشده است.\n\n"
-        "سیستم سفارش‌ها در مرحله اتصال به بخش "
-        "مدیریت سفارشات قرار دارد.",
-        reply_markup=back_home_keyboard(),
-    )
-
-
-# ==========================================================
-# ADD TO CART
-# ==========================================================
-
-@router.callback_query(
-    lambda callback: (
-        callback.data
-        and callback.data.startswith("cart:add:")
-    )
-)
-async def add_to_cart_handler(
-    callback: CallbackQuery,
-):
-
-    product_id = safe_product_id(
-        callback.data
-    )
-
-    if product_id is None:
-
-        await callback.answer(
-            "❌ شناسه محصول نامعتبر است.",
-            show_alert=True,
-        )
-
-        return
-
-    await callback.answer(
-        "🛒 سیستم سبد خرید در حال اتصال است.",
-        show_alert=True,
-    )
-
-
-# ==========================================================
-# FAVORITE
-# ==========================================================
-
-@router.callback_query(
-    lambda callback: (
-        callback.data
-        and callback.data.startswith("favorite:")
-    )
-)
-async def favorite_handler(
-    callback: CallbackQuery,
-):
-
-    product_id = safe_product_id(
-        callback.data
-    )
-
-    if product_id is None:
-
-        await callback.answer(
-            "❌ شناسه محصول نامعتبر است.",
-            show_alert=True,
-        )
-
-        return
-
-    await callback.answer(
-        "❤️ سیستم علاقه‌مندی‌ها در حال اتصال است.",
-        show_alert=True,
-    )
-
-
-# ==========================================================
-# COMPARE ADD
-# ==========================================================
-
-@router.callback_query(
-    lambda callback: (
-        callback.data
-        and callback.data.startswith("compare:add:")
-    )
-)
-async def compare_handler(
-    callback: CallbackQuery,
-):
-
-    product_id = safe_product_id(
-        callback.data
-    )
-
-    if product_id is None:
-
-        await callback.answer(
-            "❌ شناسه محصول نامعتبر است.",
-            show_alert=True,
-        )
-
-        return
-
-    await callback.answer(
-        "⚖️ سیستم مقایسه در حال اتصال است.",
-        show_alert=True,
-    )
-
-
-# ==========================================================
-# PRICE ALERT
-# ==========================================================
-
-@router.callback_query(
-    lambda callback: (
-        callback.data
-        and callback.data.startswith("alert:")
-    )
-)
-async def alert_handler(
-    callback: CallbackQuery,
-):
-
-    product_id = safe_product_id(
-        callback.data
-    )
-
-    if product_id is None:
-
-        await callback.answer(
-            "❌ شناسه محصول نامعتبر است.",
-            show_alert=True,
-        )
-
-        return
-
-    await callback.answer(
-        "🔔 سیستم هشدار قیمت در حال اتصال است.",
-        show_alert=True,
-    )
-
-
-# ==========================================================
-# UNKNOWN CALLBACK FALLBACK
-# ==========================================================
-
-@router.callback_query()
-async def unknown_callback_handler(
-    callback: CallbackQuery,
-):
-
-    await callback.answer(
-        "⚠️ این گزینه هنوز فعال نشده است.",
-        show_alert=True,
+        "هنوز سفارشی برای این حساب ثبت نشده است.",
+        reply_markup=home_keyboard(),
     )
