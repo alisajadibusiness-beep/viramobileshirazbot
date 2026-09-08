@@ -1,39 +1,41 @@
+from __future__ import annotations
 from decimal import Decimal
-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
 from app.database.connection import get_db
 from app.database.models import Product, ProductVariant
-
-
+from app.services.products import (
+    get_active_product_by_id,
+    get_product_by_id,
+    get_products as service_get_products,
+    get_products_by_category,
+    get_products_by_brand,
+    get_product_variants,
+    search_products,
+)
 router = APIRouter(
     prefix="/api/products",
     tags=["Products"],
 )
-
-
 # ==========================================================
 # SCHEMAS
 # ==========================================================
-
 class ProductVariantResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+    model_config = ConfigDict(
+        from_attributes=True
+    )
     id: int
     storage: str | None
     color: str | None
     ram: str | None
     price: Decimal
     is_active: bool
-
-
 class ProductResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+    model_config = ConfigDict(
+        from_attributes=True
+    )
     id: int
     sku: str
     brand: str
@@ -46,10 +48,13 @@ class ProductResponse(BaseModel):
     base_price: Decimal
     is_active: bool
     is_featured: bool
-    variants: list[ProductVariantResponse] = []
-
-
+    variants: list[ProductVariantResponse] = Field(
+        default_factory=list
+    )
 class ProductListResponse(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True
+    )
     id: int
     sku: str
     brand: str
@@ -59,33 +64,43 @@ class ProductListResponse(BaseModel):
     base_price: Decimal
     image_url: str | None
     is_featured: bool
-
-
 class ProductCreateRequest(BaseModel):
-    sku: str
-    brand: str
-    model: str
-    category: str
+    sku: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+    brand: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+    model: str = Field(
+        min_length=1,
+        max_length=150,
+    )
+    category: str = Field(
+        min_length=1,
+        max_length=100,
+    )
     description: str | None = None
     short_description: str | None = None
     image_url: str | None = None
     condition: str = "new"
-    base_price: Decimal = Decimal("0")
+    base_price: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+    )
     is_featured: bool = False
-
-
 class VariantCreateRequest(BaseModel):
     storage: str | None = None
     color: str | None = None
     ram: str | None = None
-    price: Decimal
+    price: Decimal = Field(
+        ge=0
+    )
     is_active: bool = True
-
-
 # ==========================================================
 # CATEGORY MAP
 # ==========================================================
-
 CATEGORY_MAP = {
     "iphone": "آیفون",
     "samsung": "سامسونگ",
@@ -93,34 +108,34 @@ CATEGORY_MAP = {
     "other": "سایر برندها",
     "used": "گوشی‌های کارکرده",
 }
-
-
 # ==========================================================
 # GET CATEGORIES
 # ==========================================================
-
 @router.get("/categories")
 async def get_categories(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return real product categories with product counts.
+    Return real active product categories
+    with product counts.
     """
-
     result = await db.execute(
         select(
             Product.category,
             func.count(Product.id),
         )
-        .where(Product.is_active.is_(True))
-        .group_by(Product.category)
-        .order_by(Product.category)
+        .where(
+            Product.is_active.is_(True)
+        )
+        .group_by(
+            Product.category
+        )
+        .order_by(
+            Product.category
+        )
     )
-
     rows = result.all()
-
     categories = []
-
     for category, count in rows:
         categories.append(
             {
@@ -129,22 +144,21 @@ async def get_categories(
                     category,
                     category,
                 ),
-                "count": count,
+                "count": int(count),
             }
         )
-
     return {
         "status": "ok",
         "count": len(categories),
         "categories": categories,
     }
-
-
 # ==========================================================
 # GET PRODUCTS
 # ==========================================================
-
-@router.get("", response_model=list[ProductListResponse])
+@router.get(
+    "",
+    response_model=list[ProductListResponse],
+)
 async def get_products(
     category: str | None = Query(
         default=None,
@@ -156,7 +170,7 @@ async def get_products(
     ),
     search: str | None = Query(
         default=None,
-        description="Search product",
+        description="Search product by brand, model or SKU",
     ),
     condition: str | None = Query(
         default=None,
@@ -178,59 +192,103 @@ async def get_products(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return products with filtering.
+    Return active products with filtering.
+    Search/filter logic is delegated to the
+    product service where possible.
     """
-
-    statement = (
-        select(Product)
-        .where(Product.is_active.is_(True))
-    )
-
-    if category:
-        statement = statement.where(
-            Product.category == category
-        )
-
-    if brand:
-        statement = statement.where(
-            Product.brand.ilike(f"%{brand}%")
-        )
-
+    # ------------------------------------------------------
+    # Search
+    # ------------------------------------------------------
     if search:
-        statement = statement.where(
-            (
-                Product.model.ilike(f"%{search}%")
-                | Product.brand.ilike(f"%{search}%")
-                | Product.sku.ilike(f"%{search}%")
-            )
+        products = await search_products(
+            db,
+            search,
+            limit=limit,
+            active_only=True,
         )
-
+        # Apply remaining filters in Python only after
+        # service-level search. This keeps the service
+        # reusable while preserving API behavior.
+        if category:
+            products = [
+                product
+                for product in products
+                if product.category == category
+            ]
+        if brand:
+            brand_lower = brand.lower()
+            products = [
+                product
+                for product in products
+                if brand_lower
+                in product.brand.lower()
+            ]
+        if condition:
+            products = [
+                product
+                for product in products
+                if product.condition == condition
+            ]
+        if featured is not None:
+            products = [
+                product
+                for product in products
+                if product.is_featured == featured
+            ]
+        return products[
+            offset: offset + limit
+        ]
+    # ------------------------------------------------------
+    # Category
+    # ------------------------------------------------------
+    if category:
+        products = await get_products_by_category(
+            db,
+            category,
+            skip=offset,
+            limit=limit,
+            active_only=True,
+        )
+    # ------------------------------------------------------
+    # Brand
+    # ------------------------------------------------------
+    elif brand:
+        products = await get_products_by_brand(
+            db,
+            brand,
+            skip=offset,
+            limit=limit,
+            active_only=True,
+        )
+    # ------------------------------------------------------
+    # Standard listing
+    # ------------------------------------------------------
+    else:
+        products = await service_get_products(
+            db,
+            skip=offset,
+            limit=limit,
+            active_only=True,
+        )
+    # ------------------------------------------------------
+    # Additional filters
+    # ------------------------------------------------------
     if condition:
-        statement = statement.where(
-            Product.condition == condition
-        )
-
+        products = [
+            product
+            for product in products
+            if product.condition == condition
+        ]
     if featured is not None:
-        statement = statement.where(
-            Product.is_featured == featured
-        )
-
-    statement = (
-        statement
-        .order_by(Product.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-    )
-
-    result = await db.execute(statement)
-
-    return result.scalars().all()
-
-
+        products = [
+            product
+            for product in products
+            if product.is_featured == featured
+        ]
+    return products
 # ==========================================================
 # GET SINGLE PRODUCT
 # ==========================================================
-
 @router.get(
     "/{product_id}",
     response_model=ProductResponse,
@@ -240,66 +298,64 @@ async def get_product(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return complete product information.
+    Return complete active product information.
     """
-
-    result = await db.execute(
-        select(Product)
-        .options(
-            selectinload(Product.variants)
-        )
-        .where(
-            Product.id == product_id,
-            Product.is_active.is_(True),
-        )
+    product = await get_active_product_by_id(
+        db,
+        product_id,
     )
-
-    product = result.scalar_one_or_none()
-
     if product is None:
         raise HTTPException(
             status_code=404,
             detail="محصول پیدا نشد.",
         )
-
     return product
-
-
 # ==========================================================
 # CREATE PRODUCT
 # ==========================================================
-
 @router.post(
     "",
     response_model=ProductResponse,
+    status_code=201,
 )
 async def create_product(
     data: ProductCreateRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Create a product.
-
-    This endpoint is intended for the future admin panel.
+    Create a new product.
+    Intended for the future admin panel.
     """
-
-    existing = await db.execute(
+    sku = data.sku.strip()
+    if not sku:
+        raise HTTPException(
+            status_code=422,
+            detail="SKU نمی‌تواند خالی باشد.",
+        )
+    # ------------------------------------------------------
+    # Check duplicate SKU
+    # ------------------------------------------------------
+    existing_result = await db.execute(
         select(Product).where(
-            Product.sku == data.sku
+            Product.sku == sku
         )
     )
-
-    if existing.scalar_one_or_none():
+    existing = (
+        existing_result.scalar_one_or_none()
+    )
+    if existing is not None:
         raise HTTPException(
             status_code=409,
             detail="SKU قبلاً ثبت شده است.",
         )
-
+    # ------------------------------------------------------
+    # Create product
+    # ------------------------------------------------------
     product = Product(
-        sku=data.sku,
-        brand=data.brand,
-        model=data.model,
-        category=data.category,
+        sku=sku,
+        brand=data.brand.strip(),
+        model=data.model.strip(),
+        category=data.category.strip(),
         description=data.description,
         short_description=data.short_description,
         image_url=data.image_url,
@@ -308,22 +364,63 @@ async def create_product(
         is_featured=data.is_featured,
         is_active=True,
     )
-
     db.add(product)
-
-    await db.commit()
-    await db.refresh(product)
-
-    return product
-
-
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="خطا در ثبت محصول.",
+        )
+    # ------------------------------------------------------
+    # Reload product with relationships
+    # ------------------------------------------------------
+    created_product = await get_product_by_id(
+        db,
+        product.id,
+    )
+    if created_product is None:
+        raise HTTPException(
+            status_code=500,
+            detail="محصول ثبت شد اما دریافت اطلاعات آن ناموفق بود.",
+        )
+    return created_product
+# ==========================================================
+# GET PRODUCT VARIANTS
+# ==========================================================
+@router.get(
+    "/{product_id}/variants",
+    response_model=list[ProductVariantResponse],
+)
+async def get_variants(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return active variants of a product.
+    """
+    product = await get_active_product_by_id(
+        db,
+        product_id,
+    )
+    if product is None:
+        raise HTTPException(
+            status_code=404,
+            detail="محصول پیدا نشد.",
+        )
+    return await get_product_variants(
+        db,
+        product_id,
+        active_only=True,
+    )
 # ==========================================================
 # CREATE PRODUCT VARIANT
 # ==========================================================
-
 @router.post(
     "/{product_id}/variants",
     response_model=ProductVariantResponse,
+    status_code=201,
 )
 async def create_variant(
     product_id: int,
@@ -331,23 +428,23 @@ async def create_variant(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Add a product variant.
+    Add a variant to an existing product.
     """
-
-    product_result = await db.execute(
-        select(Product).where(
-            Product.id == product_id
-        )
+    # ------------------------------------------------------
+    # Check product
+    # ------------------------------------------------------
+    product = await get_active_product_by_id(
+        db,
+        product_id,
     )
-
-    product = product_result.scalar_one_or_none()
-
     if product is None:
         raise HTTPException(
             status_code=404,
             detail="محصول پیدا نشد.",
         )
-
+    # ------------------------------------------------------
+    # Create variant
+    # ------------------------------------------------------
     variant = ProductVariant(
         product_id=product_id,
         storage=data.storage,
@@ -356,10 +453,16 @@ async def create_variant(
         price=data.price,
         is_active=data.is_active,
     )
-
     db.add(variant)
-
-    await db.commit()
-    await db.refresh(variant)
-
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="خطا در ثبت تنوع محصول.",
+        )
+    await db.refresh(
+        variant
+    )
     return variant
