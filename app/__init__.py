@@ -1,6 +1,6 @@
 """
 VIRA MOBILE
-Professional online mobile store platform.
+Professional Mobile Store Platform.
 """
 
 __version__ = "1.0.0"
