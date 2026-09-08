@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.config import settings
 from app.database.connection import close_db, init_db
@@ -10,7 +10,7 @@ from app.database.connection import close_db, init_db
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Application startup/shutdown lifecycle.
+    Application startup and shutdown lifecycle.
     """
 
     print("=" * 60)
@@ -46,6 +46,10 @@ app = FastAPI(
 )
 
 
+# ============================================================
+# HOME
+# ============================================================
+
 @app.get("/")
 async def root():
     return {
@@ -57,8 +61,24 @@ async def root():
     }
 
 
+@app.head("/")
+async def root_head():
+    """
+    HEAD support for monitoring services.
+    """
+    return Response(status_code=200)
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
 @app.get("/health")
 async def health():
+    """
+    Health check endpoint for Render and UptimeRobot.
+    """
+
     return JSONResponse(
         status_code=200,
         content={
@@ -69,6 +89,28 @@ async def health():
     )
 
 
+@app.head("/health")
+async def health_head():
+    """
+    HEAD health check endpoint.
+
+    UptimeRobot can use HEAD instead of GET.
+    """
+
+    return Response(
+        status_code=200,
+        headers={
+            "X-Service": "VIRA MOBILE",
+            "X-Health": "ok",
+            "X-Version": settings.app_version,
+        },
+    )
+
+
+# ============================================================
+# API STATUS
+# ============================================================
+
 @app.get("/api")
 async def api_status():
     return {
@@ -77,6 +119,19 @@ async def api_status():
         "version": settings.app_version,
     }
 
+
+@app.head("/api")
+async def api_head():
+    """
+    HEAD support for API endpoint.
+    """
+
+    return Response(status_code=200)
+
+
+# ============================================================
+# DETAILED STATUS
+# ============================================================
 
 @app.get("/api/status")
 async def detailed_status():
@@ -91,3 +146,12 @@ async def detailed_status():
             else "not_configured"
         ),
     }
+
+
+@app.head("/api/status")
+async def detailed_status_head():
+    """
+    HEAD support for detailed status endpoint.
+    """
+
+    return Response(status_code=200)
