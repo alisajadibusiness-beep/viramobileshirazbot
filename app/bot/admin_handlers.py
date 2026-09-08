@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -14,23 +15,23 @@ from aiogram.types import (
 
 from app.config import settings
 from app.database.connection import AsyncSessionLocal
-from app.services.admin_dashboard import get_admin_dashboard
 from app.services.admin_products import (
-    count_admin_products,
     create_product,
     get_admin_products,
     get_product,
     set_product_active,
     set_product_featured,
+    update_product,
 )
+from app.services.admin_dashboard import get_admin_dashboard
 
 
 router = Router()
 
 
-# ============================================================
-# Admin Security
-# ============================================================
+# ==========================================================
+# SECURITY
+# ==========================================================
 
 
 def is_admin(user_id: int | None) -> bool:
@@ -43,30 +44,342 @@ def is_admin(user_id: int | None) -> bool:
     )
 
 
-# ============================================================
-# Helpers
-# ============================================================
+# ==========================================================
+# HELPERS
+# ==========================================================
 
 
-def format_number(value: int | float) -> str:
+def format_price(value) -> str:
     try:
-        return f"{int(value):,}"
-    except (TypeError, ValueError):
-        return "0"
-
-
-def format_money(value) -> str:
-    try:
-        amount = Decimal(str(value or 0))
+        number = Decimal(str(value))
+        return f"{number:,.0f}"
     except Exception:
-        amount = Decimal("0")
-
-    return f"{amount:,.0f} تومان"
+        return str(value)
 
 
-# ============================================================
-# Product Creation FSM
-# ============================================================
+def parse_id(callback: CallbackQuery) -> int | None:
+    try:
+        return int(
+            callback.data.split(":")[-1]
+        )
+    except (AttributeError, ValueError):
+        return None
+
+
+def condition_text(value) -> str:
+    text = str(value).upper()
+
+    if "USED" in text or "کارکرده" in text:
+        return "کارکرده"
+
+    return "نو"
+
+
+def product_title(product) -> str:
+    return (
+        f"{product.brand} {product.model}"
+    ).strip()
+
+
+# ==========================================================
+# ADMIN MENU
+# ==========================================================
+
+
+def admin_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 داشبورد",
+                    callback_data="admin:dashboard",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📱 مدیریت محصولات",
+                    callback_data="admin:products",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📦 مدیریت موجودی",
+                    callback_data="admin:inventory",
+                ),
+                InlineKeyboardButton(
+                    text="🛒 سفارش‌ها",
+                    callback_data="admin:orders",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👥 مشتریان",
+                    callback_data="admin:customers",
+                ),
+                InlineKeyboardButton(
+                    text="💰 قیمت‌ها",
+                    callback_data="admin:prices",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📈 آمار فروش",
+                    callback_data="admin:stats",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 بازگشت",
+                    callback_data="home",
+                )
+            ],
+        ]
+    )
+
+
+def admin_products_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ افزودن محصول",
+                    callback_data="admin:product:add",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📋 لیست محصولات",
+                    callback_data="admin:product:list",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⭐ محصولات ویژه",
+                    callback_data="admin:product:featured",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 پنل مدیریت",
+                    callback_data="admin:panel",
+                )
+            ],
+        ]
+    )
+
+
+# ==========================================================
+# PRODUCT VIEW KEYBOARD
+# ==========================================================
+
+
+def product_admin_keyboard(
+    product_id: int,
+    is_active: bool,
+    is_featured: bool,
+) -> InlineKeyboardMarkup:
+    active_text = (
+        "🔴 غیرفعال کردن"
+        if is_active
+        else "🟢 فعال کردن"
+    )
+
+    active_action = (
+        "deactivate"
+        if is_active
+        else "activate"
+    )
+
+    featured_text = (
+        "☆ حذف از ویژه"
+        if is_featured
+        else "⭐ ویژه کردن"
+    )
+
+    featured_action = (
+        "unfeatured"
+        if is_featured
+        else "featured"
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✏️ ویرایش محصول",
+                    callback_data=(
+                        f"admin:product:edit:{product_id}"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=active_text,
+                    callback_data=(
+                        f"admin:product:{active_action}:{product_id}"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=featured_text,
+                    callback_data=(
+                        f"admin:product:{featured_action}:{product_id}"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 غیرفعال‌سازی",
+                    callback_data=(
+                        f"admin:product:delete:{product_id}"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 لیست محصولات",
+                    callback_data="admin:product:list",
+                )
+            ],
+        ]
+    )
+
+
+# ==========================================================
+# ADMIN PANEL
+# ==========================================================
+
+
+@router.message(Command("admin"))
+async def admin_command(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer(
+            "⛔ دسترسی غیرمجاز."
+        )
+        return
+
+    await message.answer(
+        "⚙️ پنل مدیریت VIRA MOBILE\n\n"
+        "به بخش مدیریت خوش آمدید.",
+        reply_markup=admin_menu(),
+    )
+
+
+@router.callback_query(F.data == "admin:panel")
+async def admin_panel(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
+        )
+        return
+
+    await callback.message.edit_text(
+        "⚙️ پنل مدیریت VIRA MOBILE\n\n"
+        "بخش موردنظر را انتخاب کنید:",
+        reply_markup=admin_menu(),
+    )
+
+    await callback.answer()
+
+
+# ==========================================================
+# DASHBOARD
+# ==========================================================
+
+
+@router.callback_query(F.data == "admin:dashboard")
+async def admin_dashboard(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        try:
+            dashboard = await get_admin_dashboard(
+                session
+            )
+
+            await callback.message.edit_text(
+                "📊 داشبورد مدیریت\n\n"
+                f"📱 محصولات: "
+                f"{dashboard.get('products', 0)}\n"
+                f"🟢 محصولات فعال: "
+                f"{dashboard.get('active_products', 0)}\n"
+                f"⭐ محصولات ویژه: "
+                f"{dashboard.get('featured_products', 0)}\n"
+                f"📦 موجودی: "
+                f"{dashboard.get('inventory', 0)}\n"
+                f"🛒 سفارش‌ها: "
+                f"{dashboard.get('orders', 0)}\n"
+                f"👥 مشتریان: "
+                f"{dashboard.get('customers', 0)}",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="🔄 بروزرسانی",
+                                callback_data="admin:dashboard",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="🔙 پنل مدیریت",
+                                callback_data="admin:panel",
+                            )
+                        ],
+                    ]
+                ),
+            )
+
+        except Exception:
+            await callback.message.edit_text(
+                "❌ دریافت اطلاعات داشبورد با خطا مواجه شد.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="🔙 پنل مدیریت",
+                                callback_data="admin:panel",
+                            )
+                        ]
+                    ]
+                ),
+            )
+
+    await callback.answer()
+
+
+# ==========================================================
+# PRODUCTS MENU
+# ==========================================================
+
+
+@router.callback_query(F.data == "admin:products")
+async def admin_products(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
+        )
+        return
+
+    await callback.message.edit_text(
+        "📱 مدیریت محصولات\n\n"
+        "عملیات موردنظر را انتخاب کنید:",
+        reply_markup=admin_products_menu(),
+    )
+
+    await callback.answer()
+
+
+# ==========================================================
+# CREATE PRODUCT FSM
+# ==========================================================
 
 
 class ProductCreateStates(StatesGroup):
@@ -81,304 +394,14 @@ class ProductCreateStates(StatesGroup):
     image = State()
 
 
-# ============================================================
-# Main Admin Menu
-# ============================================================
-
-
-def admin_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📊 داشبورد",
-                    callback_data="admin:dashboard",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📱 مدیریت محصولات",
-                    callback_data="admin:products",
-                ),
-                InlineKeyboardButton(
-                    text="📦 مدیریت موجودی",
-                    callback_data="admin:inventory",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🛒 سفارش‌ها",
-                    callback_data="admin:orders",
-                ),
-                InlineKeyboardButton(
-                    text="👥 مشتریان",
-                    callback_data="admin:customers",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💰 قیمت‌ها",
-                    callback_data="admin:prices",
-                ),
-                InlineKeyboardButton(
-                    text="📈 آمار فروش",
-                    callback_data="admin:stats",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔙 بازگشت",
-                    callback_data="home",
-                ),
-            ],
-        ]
-    )
-
-
-def admin_button() -> InlineKeyboardButton:
-    return InlineKeyboardButton(
-        text="⚙️ پنل مدیریت",
-        callback_data="admin:panel",
-    )
-
-
-# ============================================================
-# Admin Panel
-# ============================================================
-
-
-@router.callback_query(
-    lambda callback: callback.data == "admin:panel"
-)
-async def admin_panel(
-    callback: CallbackQuery,
-) -> None:
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ دسترسی غیرمجاز",
-            show_alert=True,
-        )
-        return
-
-    await callback.message.edit_text(
-        "⚙️ <b>پنل مدیریت VIRA MOBILE</b>\n\n"
-        "مدیریت فروشگاه را از این بخش انجام دهید.",
-        reply_markup=admin_menu(),
-        parse_mode="HTML",
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-# Dashboard
-# ============================================================
-
-
-@router.callback_query(
-    lambda callback: callback.data == "admin:dashboard"
-)
-async def admin_dashboard(
-    callback: CallbackQuery,
-) -> None:
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ دسترسی غیرمجاز",
-            show_alert=True,
-        )
-        return
-
-    try:
-        async with AsyncSessionLocal() as session:
-            dashboard = await get_admin_dashboard(
-                session
-            )
-
-    except Exception:
-        await callback.answer(
-            "❌ خطا در دریافت اطلاعات داشبورد",
-            show_alert=True,
-        )
-        return
-
-    products = dashboard.get("products", {})
-    inventory = dashboard.get("inventory", {})
-    orders = dashboard.get("orders", {})
-    customers = dashboard.get("customers", {})
-    sales = dashboard.get("sales", {})
-    low_stock = dashboard.get("low_stock", [])
-
-    text = (
-        "📊 <b>داشبورد مدیریت VIRA MOBILE</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-
-        "📱 <b>محصولات</b>\n"
-        f"├ کل: <b>{format_number(products.get('total', 0))}</b>\n"
-        f"├ فعال: <b>{format_number(products.get('active', 0))}</b>\n"
-        f"├ غیرفعال: <b>{format_number(products.get('inactive', 0))}</b>\n"
-        f"└ ⭐ ویژه: <b>{format_number(products.get('featured', 0))}</b>\n\n"
-
-        "📦 <b>موجودی</b>\n"
-        f"├ کل: <b>{format_number(inventory.get('total', 0))}</b>\n"
-        f"├ موجود: <b>{format_number(inventory.get('available', 0))}</b>\n"
-        f"├ رزرو: <b>{format_number(inventory.get('reserved', 0))}</b>\n"
-        f"└ فروخته‌شده: <b>{format_number(inventory.get('sold', 0))}</b>\n\n"
-
-        "🛒 <b>سفارش‌ها</b>\n"
-        f"├ کل: <b>{format_number(orders.get('total', 0))}</b>\n"
-        f"├ در انتظار: <b>{format_number(orders.get('pending', 0))}</b>\n"
-        f"├ پرداخت شده: <b>{format_number(orders.get('paid', 0))}</b>\n"
-        f"├ در حال پردازش: <b>{format_number(orders.get('processing', 0))}</b>\n"
-        f"├ ارسال شده: <b>{format_number(orders.get('shipped', 0))}</b>\n"
-        f"└ تحویل شده: <b>{format_number(orders.get('delivered', 0))}</b>\n\n"
-
-        "👥 <b>مشتریان</b>\n"
-        f"└ تعداد: <b>{format_number(customers.get('total', 0))}</b>\n\n"
-
-        "💰 <b>فروش</b>\n"
-        f"├ امروز: <b>{format_money(sales.get('today_sales', 0))}</b>\n"
-        f"├ سفارش امروز: <b>{format_number(sales.get('today_orders', 0))}</b>\n"
-        f"└ فروش کل: <b>{format_money(sales.get('total_sales', 0))}</b>\n\n"
-
-        f"⚠️ <b>کم‌موجودی:</b> "
-        f"<b>{format_number(len(low_stock))}</b>\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔄 بروزرسانی",
-                    callback_data="admin:dashboard",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📱 محصولات",
-                    callback_data="admin:products",
-                ),
-                InlineKeyboardButton(
-                    text="📦 موجودی",
-                    callback_data="admin:inventory",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🛒 سفارش‌ها",
-                    callback_data="admin:orders",
-                ),
-                InlineKeyboardButton(
-                    text="👥 مشتریان",
-                    callback_data="admin:customers",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="💰 قیمت‌ها",
-                    callback_data="admin:prices",
-                ),
-                InlineKeyboardButton(
-                    text="📈 آمار فروش",
-                    callback_data="admin:stats",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔙 پنل مدیریت",
-                    callback_data="admin:panel",
-                ),
-            ],
-        ]
-    )
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=keyboard,
-        parse_mode="HTML",
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-# Product Management Menu
-# ============================================================
-
-
-def product_management_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="➕ افزودن محصول",
-                    callback_data="admin:product:add",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📋 لیست محصولات",
-                    callback_data="admin:product:list",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⭐ محصولات ویژه",
-                    callback_data="admin:product:featured",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔙 پنل مدیریت",
-                    callback_data="admin:panel",
-                ),
-            ],
-        ]
-    )
-
-
-@router.callback_query(
-    lambda callback: callback.data == "admin:products"
-)
-async def admin_products(
-    callback: CallbackQuery,
-) -> None:
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ دسترسی غیرمجاز",
-            show_alert=True,
-        )
-        return
-
-    await callback.message.edit_text(
-        "📱 <b>مدیریت محصولات</b>\n\n"
-        "از گزینه‌های زیر استفاده کنید:",
-        reply_markup=product_management_menu(),
-        parse_mode="HTML",
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-# CREATE PRODUCT
-# ============================================================
-
-
-@router.callback_query(
-    lambda callback: callback.data == "admin:product:add"
-)
+@router.callback_query(F.data == "admin:product:add")
 async def admin_product_add(
     callback: CallbackQuery,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
@@ -389,42 +412,32 @@ async def admin_product_add(
     )
 
     await callback.message.edit_text(
-        "➕ <b>افزودن محصول جدید</b>\n\n"
+        "➕ افزودن محصول\n\n"
         "مرحله ۱ از ۹\n\n"
-        "🏷 <b>کد SKU محصول را وارد کنید:</b>\n\n"
-        "مثال:\n"
-        "<code>IPH15PM-256-BLK</code>",
-        parse_mode="HTML",
+        "SKU محصول را وارد کنید:"
     )
 
     await callback.answer()
-
-
-# ============================================================
-# SKU
-# ============================================================
 
 
 @router.message(ProductCreateStates.sku)
 async def product_create_sku(
     message: Message,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(message.from_user.id):
         return
 
-    sku = (message.text or "").strip()
+    value = message.text.strip()
 
-    if not sku:
+    if not value:
         await message.answer(
-            "❌ SKU نمی‌تواند خالی باشد.\n"
-            "دوباره وارد کنید:"
+            "❌ SKU نمی‌تواند خالی باشد."
         )
         return
 
     await state.update_data(
-        sku=sku
+        sku=value
     )
 
     await state.set_state(
@@ -433,36 +446,28 @@ async def product_create_sku(
 
     await message.answer(
         "مرحله ۲ از ۹\n\n"
-        "🏷 <b>برند محصول را وارد کنید:</b>\n\n"
-        "مثال: Apple",
-        parse_mode="HTML",
+        "برند محصول را وارد کنید:"
     )
-
-
-# ============================================================
-# BRAND
-# ============================================================
 
 
 @router.message(ProductCreateStates.brand)
 async def product_create_brand(
     message: Message,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(message.from_user.id):
         return
 
-    brand = (message.text or "").strip()
+    value = message.text.strip()
 
-    if not brand:
+    if not value:
         await message.answer(
             "❌ برند نمی‌تواند خالی باشد."
         )
         return
 
     await state.update_data(
-        brand=brand
+        brand=value
     )
 
     await state.set_state(
@@ -471,236 +476,144 @@ async def product_create_brand(
 
     await message.answer(
         "مرحله ۳ از ۹\n\n"
-        "📱 <b>مدل گوشی را وارد کنید:</b>\n\n"
-        "مثال: iPhone 15 Pro Max 256GB",
-        parse_mode="HTML",
+        "مدل محصول را وارد کنید:"
     )
-
-
-# ============================================================
-# MODEL
-# ============================================================
 
 
 @router.message(ProductCreateStates.model)
 async def product_create_model(
     message: Message,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(message.from_user.id):
         return
 
-    model = (message.text or "").strip()
+    value = message.text.strip()
 
-    if not model:
+    if not value:
         await message.answer(
             "❌ مدل نمی‌تواند خالی باشد."
         )
         return
 
     await state.update_data(
-        model=model
+        model=value
     )
 
     await state.set_state(
         ProductCreateStates.category
     )
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🍎 آیفون",
-                    callback_data="product_category:iphone",
-                ),
-                InlineKeyboardButton(
-                    text="📱 سامسونگ",
-                    callback_data="product_category:samsung",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📱 شیائومی",
-                    callback_data="product_category:xiaomi",
-                ),
-                InlineKeyboardButton(
-                    text="📱 سایر",
-                    callback_data="product_category:other",
-                ),
-            ],
-        ]
-    )
-
     await message.answer(
         "مرحله ۴ از ۹\n\n"
-        "📂 <b>دسته‌بندی محصول را انتخاب کنید:</b>",
-        reply_markup=keyboard,
-        parse_mode="HTML",
+        "دسته‌بندی را وارد کنید.\n\n"
+        "مثال:\n"
+        "iphone\n"
+        "samsung\n"
+        "xiaomi\n"
+        "other\n"
+        "used"
     )
 
 
-# ============================================================
-# CATEGORY
-# ============================================================
-
-
-@router.callback_query(
-    lambda callback: (
-        callback.data
-        and callback.data.startswith(
-            "product_category:"
-        )
-    )
-)
+@router.message(ProductCreateStates.category)
 async def product_create_category(
-    callback: CallbackQuery,
+    message: Message,
     state: FSMContext,
-) -> None:
+):
+    if not is_admin(message.from_user.id):
+        return
 
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ دسترسی غیرمجاز",
-            show_alert=True,
+    value = message.text.strip()
+
+    if not value:
+        await message.answer(
+            "❌ دسته‌بندی نمی‌تواند خالی باشد."
         )
         return
 
-    category = callback.data.split(
-        ":",
-        1,
-    )[1]
-
-    category_names = {
-        "iphone": "آیفون",
-        "samsung": "سامسونگ",
-        "xiaomi": "شیائومی",
-        "other": "سایر",
-    }
-
     await state.update_data(
-        category=category
+        category=value
     )
 
     await state.set_state(
         ProductCreateStates.condition
     )
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🆕 نو",
-                    callback_data="product_condition:NEW",
-                ),
-                InlineKeyboardButton(
-                    text="♻️ کارکرده",
-                    callback_data="product_condition:USED",
-                ),
-            ],
-        ]
-    )
-
-    await callback.message.edit_text(
+    await message.answer(
         "مرحله ۵ از ۹\n\n"
-        "📦 <b>وضعیت محصول را انتخاب کنید:</b>\n\n"
-        f"دسته‌بندی انتخاب‌شده: "
-        f"<b>{category_names.get(category, category)}</b>",
-        reply_markup=keyboard,
-        parse_mode="HTML",
+        "وضعیت محصول را وارد کنید:\n\n"
+        "NEW = نو\n"
+        "USED = کارکرده"
     )
 
-    await callback.answer()
 
-
-# ============================================================
-# CONDITION
-# ============================================================
-
-
-@router.callback_query(
-    lambda callback: (
-        callback.data
-        and callback.data.startswith(
-            "product_condition:"
-        )
-    )
-)
+@router.message(ProductCreateStates.condition)
 async def product_create_condition(
-    callback: CallbackQuery,
+    message: Message,
     state: FSMContext,
-) -> None:
+):
+    if not is_admin(message.from_user.id):
+        return
 
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ دسترسی غیرمجاز",
-            show_alert=True,
+    value = message.text.strip().upper()
+
+    if value not in {"NEW", "USED"}:
+        await message.answer(
+            "❌ فقط یکی از این دو مقدار را وارد کنید:\n\n"
+            "NEW\n"
+            "USED"
         )
         return
 
-    condition = callback.data.split(
-        ":",
-        1,
-    )[1]
-
     await state.update_data(
-        condition=condition
+        condition=value
     )
 
     await state.set_state(
         ProductCreateStates.price
     )
 
-    await callback.message.edit_text(
+    await message.answer(
         "مرحله ۶ از ۹\n\n"
-        "💰 <b>قیمت محصول را به تومان وارد کنید:</b>\n\n"
+        "قیمت محصول را به تومان وارد کنید.\n\n"
         "مثال:\n"
-        "<code>45900000</code>",
-        parse_mode="HTML",
+        "42500000"
     )
-
-    await callback.answer()
-
-
-# ============================================================
-# PRICE
-# ============================================================
 
 
 @router.message(ProductCreateStates.price)
 async def product_create_price(
     message: Message,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(message.from_user.id):
         return
 
-    raw_price = (
-        (message.text or "")
+    raw = (
+        message.text
         .strip()
         .replace(",", "")
         .replace("٬", "")
-        .replace("تومان", "")
-        .strip()
+        .replace("،", "")
     )
 
     try:
-        price = Decimal(raw_price)
+        price = Decimal(raw)
 
         if price < 0:
-            raise InvalidOperation
+            raise ValueError
 
     except (InvalidOperation, ValueError):
         await message.answer(
-            "❌ قیمت نامعتبر است.\n\n"
-            "لطفاً فقط عدد وارد کنید.\n"
-            "مثال: <code>45900000</code>",
-            parse_mode="HTML",
+            "❌ قیمت معتبر نیست.\n\n"
+            "مثال صحیح:\n"
+            "42500000"
         )
         return
 
     await state.update_data(
-        base_price=price
+        price=str(price)
     )
 
     await state.set_state(
@@ -709,35 +622,27 @@ async def product_create_price(
 
     await message.answer(
         "مرحله ۷ از ۹\n\n"
-        "📝 <b>توضیح کوتاه محصول را وارد کنید:</b>\n\n"
-        "مثال:\n"
-        "آیفون ۱۵ پرو مکس ظرفیت ۲۵۶ گیگ",
-        parse_mode="HTML",
+        "توضیح کوتاه محصول را وارد کنید.\n\n"
+        "اگر نمی‌خواهید، بنویسید:\n"
+        "ندارد"
     )
 
 
-# ============================================================
-# SHORT DESCRIPTION
-# ============================================================
-
-
-@router.message(
-    ProductCreateStates.short_description
-)
+@router.message(ProductCreateStates.short_description)
 async def product_create_short_description(
     message: Message,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(message.from_user.id):
         return
 
-    short_description = (
-        message.text or ""
-    ).strip()
+    value = message.text.strip()
+
+    if value == "ندارد":
+        value = ""
 
     await state.update_data(
-        short_description=short_description
+        short_description=value
     )
 
     await state.set_state(
@@ -746,40 +651,27 @@ async def product_create_short_description(
 
     await message.answer(
         "مرحله ۸ از ۹\n\n"
-        "📄 <b>توضیحات کامل محصول را وارد کنید:</b>\n\n"
-        "می‌توانید مشخصات، گارانتی، شرایط فروش و توضیحات "
-        "تکمیلی را وارد کنید.\n\n"
-        "اگر توضیحی ندارید، بنویسید:\n"
-        "<code>-</code>",
-        parse_mode="HTML",
+        "توضیحات کامل محصول را وارد کنید.\n\n"
+        "اگر نمی‌خواهید، بنویسید:\n"
+        "ندارد"
     )
 
 
-# ============================================================
-# DESCRIPTION
-# ============================================================
-
-
-@router.message(
-    ProductCreateStates.description
-)
+@router.message(ProductCreateStates.description)
 async def product_create_description(
     message: Message,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(message.from_user.id):
         return
 
-    description = (
-        message.text or ""
-    ).strip()
+    value = message.text.strip()
 
-    if description == "-":
-        description = ""
+    if value == "ندارد":
+        value = ""
 
     await state.update_data(
-        description=description
+        description=value
     )
 
     await state.set_state(
@@ -788,169 +680,101 @@ async def product_create_description(
 
     await message.answer(
         "مرحله ۹ از ۹\n\n"
-        "🖼 <b>عکس محصول را ارسال کنید.</b>\n\n"
-        "عکس را به‌صورت Photo در تلگرام ارسال کنید.\n\n"
-        "اگر فعلاً عکس ندارید، کلمه زیر را بفرستید:\n"
-        "<code>skip</code>",
-        parse_mode="HTML",
+        "تصویر محصول را ارسال کنید.\n\n"
+        "اگر تصویر ندارید، بنویسید:\n"
+        "ندارد"
     )
-
-
-# ============================================================
-# IMAGE
-# ============================================================
 
 
 @router.message(ProductCreateStates.image)
 async def product_create_image(
     message: Message,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(message.from_user.id):
         return
 
-    image_url = ""
+    image_file_id = None
 
     if message.photo:
-        image_url = (
+        image_file_id = (
             message.photo[-1].file_id
         )
 
     elif message.text:
-        text = message.text.strip()
+        value = message.text.strip()
 
-        if text.lower() == "skip":
-            image_url = ""
+        if value != "ندارد":
+            image_file_id = value
 
-        else:
-            await message.answer(
-                "❌ لطفاً عکس را به‌صورت Photo ارسال کنید.\n\n"
-                "اگر عکس ندارید، <code>skip</code> را بفرستید.",
-                parse_mode="HTML",
-            )
-            return
-
-    else:
-        await message.answer(
-            "❌ عکس محصول دریافت نشد."
+    if not image_file_id:
+        await state.update_data(
+            image_url=None
         )
-        return
-
-    await state.update_data(
-        image_url=image_url
-    )
+    else:
+        await state.update_data(
+            image_url=image_file_id
+        )
 
     data = await state.get_data()
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ ثبت محصول",
-                    callback_data="admin:product:create:confirm",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="❌ لغو",
-                    callback_data="admin:product:create:cancel",
-                ),
-            ],
-        ]
-    )
-
-    condition_text = {
-        "NEW": "نو",
-        "USED": "کارکرده",
-    }.get(
-        data.get("condition"),
-        data.get("condition", "-"),
-    )
-
-    category_text = {
-        "iphone": "آیفون",
-        "samsung": "سامسونگ",
-        "xiaomi": "شیائومی",
-        "other": "سایر",
-    }.get(
-        data.get("category"),
-        data.get("category", "-"),
-    )
+    condition = data["condition"]
 
     preview = (
-        "📋 <b>پیش‌نمایش محصول</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"🏷 SKU: <code>{data.get('sku')}</code>\n"
-        f"🏢 برند: <b>{data.get('brand')}</b>\n"
-        f"📱 مدل: <b>{data.get('model')}</b>\n"
-        f"📂 دسته: <b>{category_text}</b>\n"
-        f"📦 وضعیت: <b>{condition_text}</b>\n"
-        f"💰 قیمت: <b>{format_money(data.get('base_price'))}</b>\n"
-        f"📝 توضیح کوتاه: <b>{data.get('short_description') or '-'}</b>\n"
-        f"📄 توضیحات: <b>{data.get('description') or '-'}</b>\n"
-        f"🖼 عکس: <b>{'دارد' if image_url else 'ندارد'}</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "آیا اطلاعات صحیح است؟"
+        "📋 پیش‌نمایش محصول\n\n"
+        f"🆔 SKU: {data['sku']}\n"
+        f"🏷 برند: {data['brand']}\n"
+        f"📱 مدل: {data['model']}\n"
+        f"📂 دسته‌بندی: {data['category']}\n"
+        f"📦 وضعیت: {condition_text(condition)}\n"
+        f"💰 قیمت: {format_price(data['price'])} تومان\n"
+        f"📝 توضیح کوتاه: "
+        f"{data.get('short_description') or 'ندارد'}\n"
+        f"📄 توضیحات: "
+        f"{data.get('description') or 'ندارد'}\n"
+        f"🖼 تصویر: "
+        f"{'دارد' if data.get('image_url') else 'ندارد'}"
     )
 
     await message.answer(
         preview,
-        reply_markup=keyboard,
-        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ ثبت محصول",
+                        callback_data="admin:product:create:confirm",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ لغو",
+                        callback_data="admin:product:create:cancel",
+                    )
+                ],
+            ]
+        ),
     )
-
-
-# ============================================================
-# CONFIRM CREATE
-# ============================================================
 
 
 @router.callback_query(
-    lambda callback: (
-        callback.data
-        == "admin:product:create:confirm"
-    )
+    F.data == "admin:product:create:confirm"
 )
 async def product_create_confirm(
     callback: CallbackQuery,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
     data = await state.get_data()
 
-    required_fields = [
-        "sku",
-        "brand",
-        "model",
-        "category",
-        "condition",
-        "base_price",
-    ]
-
-    missing = [
-        field
-        for field in required_fields
-        if not data.get(field)
-    ]
-
-    if missing:
-        await callback.answer(
-            "❌ اطلاعات محصول ناقص است.",
-            show_alert=True,
-        )
-        return
-
-    try:
-        async with AsyncSessionLocal() as session:
-
+    async with AsyncSessionLocal() as session:
+        try:
             product = await create_product(
                 session,
                 sku=data["sku"],
@@ -958,106 +782,83 @@ async def product_create_confirm(
                 model=data["model"],
                 category=data["category"],
                 condition=data["condition"],
-                base_price=Decimal(
-                    str(data["base_price"])
-                ),
+                base_price=data["price"],
                 short_description=data.get(
-                    "short_description",
-                    "",
+                    "short_description"
                 ),
                 description=data.get(
-                    "description",
-                    "",
+                    "description"
                 ),
                 image_url=data.get(
-                    "image_url",
-                    "",
+                    "image_url"
                 ),
-                is_active=True,
-                is_featured=False,
             )
 
-    except Exception as exc:
-        error_text = str(exc)
+        except ValueError as exc:
+            await callback.message.edit_text(
+                f"❌ {exc}\n\n"
+                "محصول ثبت نشد."
+            )
+            await state.clear()
+            await callback.answer()
+            return
 
-        await callback.message.edit_text(
-            "❌ <b>ثبت محصول انجام نشد.</b>\n\n"
-            f"خطا: <code>{error_text[:500]}</code>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="🔙 مدیریت محصولات",
-                            callback_data="admin:products",
-                        ),
-                    ],
-                ]
-            ),
-        )
+        except Exception:
+            await session.rollback()
 
-        await state.clear()
-        await callback.answer()
-        return
+            await callback.message.edit_text(
+                "❌ هنگام ثبت محصول خطایی رخ داد."
+            )
+            await state.clear()
+            await callback.answer()
+            return
 
     await state.clear()
 
     await callback.message.edit_text(
-        "✅ <b>محصول با موفقیت ثبت شد.</b>\n\n"
-        f"🆔 شناسه محصول: <code>{product.id}</code>\n"
-        f"🏷 SKU: <code>{product.sku}</code>\n"
-        f"📱 {product.brand} {product.model}\n"
-        f"💰 {format_money(product.base_price)}\n\n"
-        "محصول در دیتابیس ذخیره شد.",
+        "✅ محصول با موفقیت ثبت شد.\n\n"
+        f"📱 {product_title(product)}\n"
+        f"🆔 SKU: {product.sku}\n"
+        f"💰 {format_price(product.base_price)} تومان",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="➕ افزودن محصول دیگر",
-                        callback_data="admin:product:add",
-                    ),
+                        text="✏️ ویرایش محصول",
+                        callback_data=(
+                            f"admin:product:edit:{product.id}"
+                        ),
+                    )
                 ],
                 [
                     InlineKeyboardButton(
                         text="📋 لیست محصولات",
                         callback_data="admin:product:list",
-                    ),
+                    )
                 ],
                 [
                     InlineKeyboardButton(
                         text="🔙 مدیریت محصولات",
                         callback_data="admin:products",
-                    ),
+                    )
                 ],
             ]
         ),
-        parse_mode="HTML",
     )
 
-    await callback.answer(
-        "✅ محصول ثبت شد"
-    )
-
-
-# ============================================================
-# CANCEL CREATE
-# ============================================================
+    await callback.answer()
 
 
 @router.callback_query(
-    lambda callback: (
-        callback.data
-        == "admin:product:create:cancel"
-    )
+    F.data == "admin:product:create:cancel"
 )
 async def product_create_cancel(
     callback: CallbackQuery,
     state: FSMContext,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
@@ -1065,103 +866,63 @@ async def product_create_cancel(
     await state.clear()
 
     await callback.message.edit_text(
-        "❌ <b>افزودن محصول لغو شد.</b>",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="📱 مدیریت محصولات",
-                        callback_data="admin:products",
-                    ),
-                ],
-            ]
-        ),
-        parse_mode="HTML",
+        "❌ عملیات افزودن محصول لغو شد.",
+        reply_markup=admin_products_menu(),
     )
 
     await callback.answer()
 
 
-# ============================================================
+# ==========================================================
 # PRODUCT LIST
-# ============================================================
+# ==========================================================
 
 
-@router.callback_query(
-    lambda callback: callback.data == "admin:product:list"
-)
+@router.callback_query(F.data == "admin:product:list")
 async def admin_product_list(
     callback: CallbackQuery,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
-    try:
-        async with AsyncSessionLocal() as session:
-
-            products = await get_admin_products(
-                session,
-                limit=30,
-            )
-
-            total = await count_admin_products(
-                session
-            )
-
-    except Exception:
-        await callback.answer(
-            "❌ خطا در دریافت محصولات",
-            show_alert=True,
+    async with AsyncSessionLocal() as session:
+        products = await get_admin_products(
+            session,
+            limit=50,
         )
-        return
 
     if not products:
-        text = (
-            "📋 <b>لیست محصولات</b>\n\n"
-            "هنوز هیچ محصولی ثبت نشده است."
-        )
-
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="➕ افزودن محصول",
-                        callback_data="admin:product:add",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔙 مدیریت محصولات",
-                        callback_data="admin:products",
-                    ),
-                ],
-            ]
-        )
-
         await callback.message.edit_text(
-            text,
-            reply_markup=keyboard,
-            parse_mode="HTML",
+            "📋 لیست محصولات\n\n"
+            "هنوز محصولی ثبت نشده است.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="➕ افزودن محصول",
+                            callback_data="admin:product:add",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="🔙 مدیریت محصولات",
+                            callback_data="admin:products",
+                        )
+                    ],
+                ]
+            ),
         )
 
         await callback.answer()
         return
 
-    text = (
-        "📋 <b>لیست محصولات</b>\n"
-        f"تعداد کل: <b>{format_number(total)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-    )
-
-    buttons = []
+    rows = []
 
     for product in products:
-
         status = (
             "🟢"
             if product.is_active
@@ -1174,115 +935,88 @@ async def admin_product_list(
             else ""
         )
 
-        text += (
-            f"{status} <b>{product.brand} "
-            f"{product.model}</b>{featured}\n"
-            f"   🆔 {product.id} | "
-            f"💰 {format_money(product.base_price)}\n\n"
-        )
-
-        buttons.append(
+        rows.append(
             [
                 InlineKeyboardButton(
                     text=(
                         f"{status} "
                         f"{product.brand} "
                         f"{product.model}"
+                        f"{featured}"
                     ),
                     callback_data=(
-                        f"admin:product:view:"
-                        f"{product.id}"
+                        f"admin:product:view:{product.id}"
                     ),
                 )
             ]
         )
 
-    buttons.extend(
+    rows.append(
         [
-            [
-                InlineKeyboardButton(
-                    text="➕ افزودن محصول",
-                    callback_data="admin:product:add",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔄 بروزرسانی",
-                    callback_data="admin:product:list",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔙 مدیریت محصولات",
-                    callback_data="admin:products",
-                ),
-            ],
+            InlineKeyboardButton(
+                text="➕ افزودن محصول",
+                callback_data="admin:product:add",
+            )
+        ]
+    )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🔙 مدیریت محصولات",
+                callback_data="admin:products",
+            )
         ]
     )
 
     await callback.message.edit_text(
-        text,
+        f"📋 لیست محصولات\n\n"
+        f"تعداد: {len(products)}\n\n"
+        "برای مشاهده جزئیات روی محصول بزنید:",
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=buttons
+            inline_keyboard=rows
         ),
-        parse_mode="HTML",
     )
 
     await callback.answer()
 
 
-# ============================================================
+# ==========================================================
 # PRODUCT VIEW
-# ============================================================
+# ==========================================================
 
 
 @router.callback_query(
-    lambda callback: (
-        callback.data
-        and callback.data.startswith(
-            "admin:product:view:"
-        )
-    )
+    F.data.startswith("admin:product:view:")
 )
 async def admin_product_view(
     callback: CallbackQuery,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
-    try:
-        product_id = int(
-            callback.data.rsplit(":", 1)[1]
-        )
-    except (ValueError, TypeError):
+    product_id = parse_id(callback)
+
+    if product_id is None:
         await callback.answer(
-            "❌ شناسه محصول نامعتبر است.",
+            "شناسه محصول نامعتبر است.",
             show_alert=True,
         )
         return
 
-    try:
-        async with AsyncSessionLocal() as session:
-            product = await get_product(
-                session,
-                product_id,
-            )
-
-    except Exception:
-        await callback.answer(
-            "❌ خطا در دریافت محصول",
-            show_alert=True,
+    async with AsyncSessionLocal() as session:
+        product = await get_product(
+            session,
+            product_id,
         )
-        return
 
     if product is None:
         await callback.answer(
-            "❌ محصول پیدا نشد.",
+            "محصول پیدا نشد.",
             show_alert=True,
         )
         return
@@ -1296,287 +1030,917 @@ async def admin_product_view(
     featured = (
         "⭐ بله"
         if product.is_featured
-        else "▫️ خیر"
-    )
-
-    condition = {
-        "NEW": "🆕 نو",
-        "USED": "♻️ کارکرده",
-    }.get(
-        getattr(
-            product.condition,
-            "value",
-            product.condition,
-        ),
-        str(product.condition),
+        else "☆ خیر"
     )
 
     text = (
-        "📱 <b>جزئیات محصول</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"🆔 شناسه: <code>{product.id}</code>\n"
-        f"🏷 SKU: <code>{product.sku}</code>\n"
-        f"🏢 برند: <b>{product.brand}</b>\n"
-        f"📱 مدل: <b>{product.model}</b>\n"
-        f"📂 دسته: <b>{product.category}</b>\n"
-        f"📦 وضعیت: <b>{condition}</b>\n"
-        f"💰 قیمت: <b>{format_money(product.base_price)}</b>\n"
-        f"🔘 وضعیت فروش: <b>{status}</b>\n"
-        f"⭐ ویژه: <b>{featured}</b>\n"
+        "📱 اطلاعات محصول\n\n"
+        f"🆔 ID: {product.id}\n"
+        f"🏷 SKU: {product.sku}\n"
+        f"📱 محصول: {product_title(product)}\n"
+        f"🏭 برند: {product.brand}\n"
+        f"📂 دسته‌بندی: {product.category}\n"
+        f"📦 وضعیت: "
+        f"{condition_text(product.condition)}\n"
+        f"💰 قیمت: "
+        f"{format_price(product.base_price)} تومان\n"
+        f"🔘 وضعیت فروش: {status}\n"
+        f"⭐ ویژه: {featured}\n\n"
         f"📝 توضیح کوتاه:\n"
-        f"{product.short_description or '-'}\n\n"
-        f"📄 توضیحات:\n"
-        f"{product.description or '-'}\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-
-    active_callback = (
-        f"admin:product:deactivate:{product.id}"
-        if product.is_active
-        else f"admin:product:activate:{product.id}"
-    )
-
-    featured_callback = (
-        f"admin:product:unfeatured:{product.id}"
-        if product.is_featured
-        else f"admin:product:featured:{product.id}"
-    )
-
-    active_text = (
-        "🔴 غیرفعال کردن"
-        if product.is_active
-        else "🟢 فعال کردن"
-    )
-
-    featured_text = (
-        "⭐ حذف از ویژه"
-        if product.is_featured
-        else "⭐ ویژه کردن"
-    )
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=active_text,
-                    callback_data=active_callback,
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text=featured_text,
-                    callback_data=featured_callback,
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📋 لیست محصولات",
-                    callback_data="admin:product:list",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔙 مدیریت محصولات",
-                    callback_data="admin:products",
-                ),
-            ],
-        ]
+        f"{product.short_description or 'ندارد'}"
     )
 
     await callback.message.edit_text(
         text,
-        reply_markup=keyboard,
-        parse_mode="HTML",
+        reply_markup=product_admin_keyboard(
+            product.id,
+            product.is_active,
+            product.is_featured,
+        ),
     )
 
     await callback.answer()
 
 
-# ============================================================
-# ACTIVATE / DEACTIVATE
-# ============================================================
+# ==========================================================
+# EDIT PRODUCT FSM
+# ==========================================================
+
+
+class ProductEditStates(StatesGroup):
+    value = State()
+
+
+EDITABLE_FIELDS = {
+    "sku": "SKU",
+    "brand": "برند",
+    "model": "مدل",
+    "category": "دسته‌بندی",
+    "condition": "وضعیت",
+    "price": "قیمت",
+    "short_description": "توضیح کوتاه",
+    "description": "توضیحات",
+    "image": "تصویر",
+}
+
+
+def edit_fields_keyboard(
+    product_id: int,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏷 SKU",
+                    callback_data=(
+                        f"admin:product:editfield:sku:{product_id}"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="🏭 برند",
+                    callback_data=(
+                        f"admin:product:editfield:brand:{product_id}"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📱 مدل",
+                    callback_data=(
+                        f"admin:product:editfield:model:{product_id}"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="📂 دسته‌بندی",
+                    callback_data=(
+                        f"admin:product:editfield:category:{product_id}"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📦 وضعیت",
+                    callback_data=(
+                        f"admin:product:editfield:condition:{product_id}"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text="💰 قیمت",
+                    callback_data=(
+                        f"admin:product:editfield:price:{product_id}"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 توضیح کوتاه",
+                    callback_data=(
+                        f"admin:product:editfield:short_description:{product_id}"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📄 توضیحات کامل",
+                    callback_data=(
+                        f"admin:product:editfield:description:{product_id}"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🖼 تصویر",
+                    callback_data=(
+                        f"admin:product:editfield:image:{product_id}"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 بازگشت",
+                    callback_data=(
+                        f"admin:product:view:{product_id}"
+                    ),
+                )
+            ],
+        ]
+    )
 
 
 @router.callback_query(
-    lambda callback: (
-        callback.data
-        and (
-            callback.data.startswith(
-                "admin:product:activate:"
-            )
-            or callback.data.startswith(
-                "admin:product:deactivate:"
-            )
-        )
-    )
+    F.data.startswith("admin:product:edit:")
 )
-async def admin_product_active_toggle(
+async def admin_product_edit(
     callback: CallbackQuery,
-) -> None:
-
+    state: FSMContext,
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
-    try:
-        parts = callback.data.split(":")
+    product_id = parse_id(callback)
 
-        action = parts[2]
-        product_id = int(parts[3])
-
-    except (ValueError, IndexError, TypeError):
+    if product_id is None:
         await callback.answer(
-            "❌ اطلاعات نامعتبر است.",
+            "شناسه محصول نامعتبر است.",
             show_alert=True,
         )
         return
 
-    active = action == "activate"
-
-    try:
-        async with AsyncSessionLocal() as session:
-
-            product = await set_product_active(
-                session,
-                product_id,
-                active,
-            )
-
-    except Exception:
-        await callback.answer(
-            "❌ خطا در تغییر وضعیت محصول",
-            show_alert=True,
+    async with AsyncSessionLocal() as session:
+        product = await get_product(
+            session,
+            product_id,
         )
-        return
 
     if product is None:
         await callback.answer(
-            "❌ محصول پیدا نشد.",
+            "محصول پیدا نشد.",
             show_alert=True,
         )
         return
 
-    await callback.answer(
-        "✅ وضعیت محصول تغییر کرد."
+    await state.clear()
+
+    await callback.message.edit_text(
+        "✏️ ویرایش محصول\n\n"
+        f"📱 {product_title(product)}\n"
+        f"🏷 SKU: {product.sku}\n\n"
+        "فیلدی که می‌خواهید تغییر دهید را انتخاب کنید:",
+        reply_markup=edit_fields_keyboard(
+            product_id
+        ),
     )
 
-    # Refresh product view
-    await admin_product_view(callback)
-
-
-# ============================================================
-# FEATURED TOGGLE
-# ============================================================
+    await callback.answer()
 
 
 @router.callback_query(
-    lambda callback: (
-        callback.data
-        and (
-            callback.data.startswith(
-                "admin:product:featured:"
-            )
-            or callback.data.startswith(
-                "admin:product:unfeatured:"
-            )
+    F.data.startswith("admin:product:editfield:")
+)
+async def admin_product_edit_field(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
         )
+        return
+
+    parts = callback.data.split(":")
+
+    if len(parts) != 5:
+        await callback.answer(
+            "اطلاعات ویرایش نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
+    field = parts[3]
+
+    try:
+        product_id = int(parts[4])
+    except ValueError:
+        await callback.answer(
+            "شناسه محصول نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
+    if field not in EDITABLE_FIELDS:
+        await callback.answer(
+            "فیلد نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        product = await get_product(
+            session,
+            product_id,
+        )
+
+    if product is None:
+        await callback.answer(
+            "محصول پیدا نشد.",
+            show_alert=True,
+        )
+        return
+
+    await state.clear()
+
+    await state.set_state(
+        ProductEditStates.value
     )
+
+    await state.update_data(
+        product_id=product_id,
+        field=field,
+    )
+
+    current_value = ""
+
+    if field == "sku":
+        current_value = product.sku
+    elif field == "brand":
+        current_value = product.brand
+    elif field == "model":
+        current_value = product.model
+    elif field == "category":
+        current_value = product.category
+    elif field == "condition":
+        current_value = condition_text(
+            product.condition
+        )
+    elif field == "price":
+        current_value = (
+            format_price(product.base_price)
+        )
+    elif field == "short_description":
+        current_value = (
+            product.short_description
+            or "ندارد"
+        )
+    elif field == "description":
+        current_value = (
+            product.description
+            or "ندارد"
+        )
+    elif field == "image":
+        current_value = (
+            "دارد"
+            if product.image_url
+            else "ندارد"
+        )
+
+    instruction = (
+        f"✏️ ویرایش {EDITABLE_FIELDS[field]}\n\n"
+        f"مقدار فعلی:\n"
+        f"{current_value}\n\n"
+    )
+
+    if field == "condition":
+        instruction += (
+            "مقدار جدید را وارد کنید:\n"
+            "NEW = نو\n"
+            "USED = کارکرده"
+        )
+
+    elif field == "price":
+        instruction += (
+            "قیمت جدید را به تومان وارد کنید.\n\n"
+            "مثال:\n"
+            "45000000"
+        )
+
+    elif field == "image":
+        instruction += (
+            "تصویر جدید را ارسال کنید.\n\n"
+            "یا اگر می‌خواهید تصویر حذف شود، "
+            "بنویسید:\n"
+            "حذف"
+        )
+
+    else:
+        instruction += (
+            "مقدار جدید را ارسال کنید.\n\n"
+            "برای لغو، بنویسید:\n"
+            "لغو"
+        )
+
+    await callback.message.edit_text(
+        instruction
+    )
+
+    await callback.answer()
+
+
+@router.message(ProductEditStates.value)
+async def admin_product_edit_value(
+    message: Message,
+    state: FSMContext,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+
+    product_id = data.get("product_id")
+    field = data.get("field")
+
+    if not product_id or not field:
+        await state.clear()
+
+        await message.answer(
+            "❌ جلسه ویرایش منقضی شده است."
+        )
+        return
+
+    # ------------------------------------------------------
+    # Cancel
+    # ------------------------------------------------------
+
+    if message.text:
+        text = message.text.strip()
+
+        if text == "لغو":
+            await state.clear()
+
+            await message.answer(
+                "❌ ویرایش لغو شد.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="🔙 محصول",
+                                callback_data=(
+                                    f"admin:product:view:{product_id}"
+                                ),
+                            )
+                        ]
+                    ]
+                ),
+            )
+            return
+
+    # ------------------------------------------------------
+    # Image
+    # ------------------------------------------------------
+
+    if field == "image":
+        if message.photo:
+            value = (
+                message.photo[-1].file_id
+            )
+        elif message.text:
+            if message.text.strip() == "حذف":
+                value = ""
+            else:
+                value = message.text.strip()
+        else:
+            await message.answer(
+                "❌ تصویر معتبر نیست."
+            )
+            return
+
+    else:
+        if not message.text:
+            await message.answer(
+                "❌ لطفاً مقدار را به‌صورت متنی ارسال کنید."
+            )
+            return
+
+        value = message.text.strip()
+
+        if not value:
+            await message.answer(
+                "❌ مقدار نمی‌تواند خالی باشد."
+            )
+            return
+
+    # ------------------------------------------------------
+    # Normalize condition
+    # ------------------------------------------------------
+
+    if field == "condition":
+        value = value.upper()
+
+        if value in {"نو", "NEW"}:
+            value = "NEW"
+
+        elif value in {"کارکرده", "USED"}:
+            value = "USED"
+
+        else:
+            await message.answer(
+                "❌ وضعیت نامعتبر است.\n\n"
+                "فقط:\n"
+                "NEW\n"
+                "USED"
+            )
+            return
+
+    # ------------------------------------------------------
+    # Normalize price
+    # ------------------------------------------------------
+
+    if field == "price":
+        normalized = (
+            value
+            .replace(",", "")
+            .replace("٬", "")
+            .replace("،", "")
+            .replace("تومان", "")
+            .replace("تومن", "")
+            .strip()
+        )
+
+        try:
+            price = Decimal(normalized)
+
+            if price < 0:
+                raise ValueError
+
+        except (InvalidOperation, ValueError):
+            await message.answer(
+                "❌ قیمت معتبر نیست.\n\n"
+                "مثال:\n"
+                "45000000"
+            )
+            return
+
+        value = str(price)
+
+    # ------------------------------------------------------
+    # Update
+    # ------------------------------------------------------
+
+    async with AsyncSessionLocal() as session:
+        try:
+            kwargs = {}
+
+            if field == "sku":
+                kwargs["sku"] = value
+
+            elif field == "brand":
+                kwargs["brand"] = value
+
+            elif field == "model":
+                kwargs["model"] = value
+
+            elif field == "category":
+                kwargs["category"] = value
+
+            elif field == "condition":
+                kwargs["condition"] = value
+
+            elif field == "price":
+                kwargs["base_price"] = value
+
+            elif field == "short_description":
+                kwargs["short_description"] = value
+
+            elif field == "description":
+                kwargs["description"] = value
+
+            elif field == "image":
+                kwargs["image_url"] = value or None
+
+            product, price_changed = (
+                await update_product(
+                    session,
+                    product_id,
+                    **kwargs,
+                )
+            )
+
+            if product is None:
+                await state.clear()
+
+                await message.answer(
+                    "❌ محصول پیدا نشد."
+                )
+                return
+
+        except ValueError as exc:
+            await message.answer(
+                f"❌ {exc}"
+            )
+            return
+
+        except Exception:
+            await session.rollback()
+
+            await message.answer(
+                "❌ هنگام ذخیره تغییرات خطایی رخ داد."
+            )
+            return
+
+    await state.clear()
+
+    price_message = ""
+
+    if field == "price" and price_changed:
+        price_message = (
+            "\n\n📈 تغییر قیمت ثبت شد و "
+            "در تاریخچه قیمت ذخیره گردید."
+        )
+
+    await message.answer(
+        "✅ تغییرات با موفقیت ذخیره شد.\n\n"
+        f"📱 {product_title(product)}\n"
+        f"✏️ فیلد تغییر یافته: "
+        f"{EDITABLE_FIELDS[field]}"
+        f"{price_message}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📱 مشاهده محصول",
+                        callback_data=(
+                            f"admin:product:view:{product_id}"
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="✏️ ادامه ویرایش",
+                        callback_data=(
+                            f"admin:product:edit:{product_id}"
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔙 مدیریت محصولات",
+                        callback_data="admin:products",
+                    )
+                ],
+            ]
+        ),
+    )
+
+
+# ==========================================================
+# ACTIVE / INACTIVE
+# ==========================================================
+
+
+@router.callback_query(
+    F.data.startswith("admin:product:activate:")
+)
+async def admin_product_activate(
+    callback: CallbackQuery,
+):
+    await _set_active(
+        callback,
+        True,
+    )
+
+
+@router.callback_query(
+    F.data.startswith("admin:product:deactivate:")
+)
+async def admin_product_deactivate(
+    callback: CallbackQuery,
+):
+    await _set_active(
+        callback,
+        False,
+    )
+
+
+async def _set_active(
+    callback: CallbackQuery,
+    active: bool,
+):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
+        )
+        return
+
+    product_id = parse_id(callback)
+
+    if product_id is None:
+        await callback.answer(
+            "شناسه محصول نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        product = await set_product_active(
+            session,
+            product_id,
+            active,
+        )
+
+    if product is None:
+        await callback.answer(
+            "محصول پیدا نشد.",
+            show_alert=True,
+        )
+        return
+
+    await callback.message.edit_text(
+        "✅ وضعیت محصول تغییر کرد.\n\n"
+        f"📱 {product_title(product)}\n"
+        f"وضعیت جدید: "
+        f"{'🟢 فعال' if active else '🔴 غیرفعال'}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📱 مشاهده محصول",
+                        callback_data=(
+                            f"admin:product:view:{product_id}"
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📋 لیست محصولات",
+                        callback_data="admin:product:list",
+                    )
+                ],
+            ]
+        ),
+    )
+
+    await callback.answer()
+
+
+# ==========================================================
+# FEATURED / UNFEATURED
+# ==========================================================
+
+
+@router.callback_query(
+    F.data.startswith("admin:product:featured:")
 )
 async def admin_product_featured_toggle(
     callback: CallbackQuery,
-) -> None:
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ دسترسی غیرمجاز",
-            show_alert=True,
-        )
-        return
-
-    try:
-        parts = callback.data.split(":")
-
-        action = parts[2]
-        product_id = int(parts[3])
-
-    except (ValueError, IndexError, TypeError):
-        await callback.answer(
-            "❌ اطلاعات نامعتبر است.",
-            show_alert=True,
-        )
-        return
-
-    featured = action == "featured"
-
-    try:
-        async with AsyncSessionLocal() as session:
-
-            product = await set_product_featured(
-                session,
-                product_id,
-                featured,
-            )
-
-    except Exception:
-        await callback.answer(
-            "❌ خطا در تغییر وضعیت ویژه",
-            show_alert=True,
-        )
-        return
-
-    if product is None:
-        await callback.answer(
-            "❌ محصول پیدا نشد.",
-            show_alert=True,
-        )
-        return
-
-    await callback.answer(
-        "⭐ وضعیت ویژه محصول تغییر کرد."
+):
+    await _set_featured(
+        callback,
+        True,
     )
-
-    await admin_product_view(callback)
-
-
-# ============================================================
-# FEATURED PRODUCTS
-# ============================================================
 
 
 @router.callback_query(
-    lambda callback: (
-        callback.data
-        == "admin:product:featured"
+    F.data.startswith("admin:product:unfeatured:")
+)
+async def admin_product_unfeatured_toggle(
+    callback: CallbackQuery,
+):
+    await _set_featured(
+        callback,
+        False,
     )
+
+
+async def _set_featured(
+    callback: CallbackQuery,
+    featured: bool,
+):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
+        )
+        return
+
+    product_id = parse_id(callback)
+
+    if product_id is None:
+        await callback.answer(
+            "شناسه محصول نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        product = await set_product_featured(
+            session,
+            product_id,
+            featured,
+        )
+
+    if product is None:
+        await callback.answer(
+            "محصول پیدا نشد.",
+            show_alert=True,
+        )
+        return
+
+    await callback.message.edit_text(
+        "✅ وضعیت ویژه محصول تغییر کرد.\n\n"
+        f"📱 {product_title(product)}\n"
+        f"وضعیت جدید: "
+        f"{'⭐ ویژه' if featured else '☆ عادی'}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📱 مشاهده محصول",
+                        callback_data=(
+                            f"admin:product:view:{product_id}"
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📋 لیست محصولات",
+                        callback_data="admin:product:list",
+                    )
+                ],
+            ]
+        ),
+    )
+
+    await callback.answer()
+
+
+# ==========================================================
+# SAFE DELETE / DEACTIVATE
+# ==========================================================
+
+
+@router.callback_query(
+    F.data.startswith("admin:product:delete:")
+)
+async def admin_product_delete(
+    callback: CallbackQuery,
+):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
+        )
+        return
+
+    product_id = parse_id(callback)
+
+    if product_id is None:
+        await callback.answer(
+            "شناسه محصول نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
+    await callback.message.edit_text(
+        "⚠️ غیرفعال‌سازی محصول\n\n"
+        "محصول به‌صورت فیزیکی از دیتابیس حذف نمی‌شود.\n"
+        "فقط از فروش خارج خواهد شد.\n\n"
+        "این روش برای حفظ سوابق سفارش‌ها و موجودی امن‌تر است.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🔴 تأیید غیرفعال‌سازی",
+                        callback_data=(
+                            f"admin:product:delete_confirm:{product_id}"
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ انصراف",
+                        callback_data=(
+                            f"admin:product:view:{product_id}"
+                        ),
+                    )
+                ],
+            ]
+        ),
+    )
+
+    await callback.answer()
+
+
+@router.callback_query(
+    F.data.startswith(
+        "admin:product:delete_confirm:"
+    )
+)
+async def admin_product_delete_confirm(
+    callback: CallbackQuery,
+):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
+        )
+        return
+
+    product_id = parse_id(callback)
+
+    if product_id is None:
+        await callback.answer(
+            "شناسه محصول نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        product = await set_product_active(
+            session,
+            product_id,
+            False,
+        )
+
+        if product is not None:
+            product = await set_product_featured(
+                session,
+                product_id,
+                False,
+            )
+
+    if product is None:
+        await callback.answer(
+            "محصول پیدا نشد.",
+            show_alert=True,
+        )
+        return
+
+    await callback.message.edit_text(
+        "🔴 محصول غیرفعال شد.\n\n"
+        f"📱 {product_title(product)}\n"
+        "این محصول از فروش خارج شده ولی "
+        "اطلاعات آن در دیتابیس باقی مانده است.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🟢 فعال‌سازی مجدد",
+                        callback_data=(
+                            f"admin:product:activate:{product_id}"
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📋 لیست محصولات",
+                        callback_data="admin:product:list",
+                    )
+                ],
+            ]
+        ),
+    )
+
+    await callback.answer()
+
+
+# ==========================================================
+# FEATURED PRODUCTS
+# ==========================================================
+
+
+@router.callback_query(
+    F.data == "admin:product:featured"
 )
 async def admin_product_featured(
     callback: CallbackQuery,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
-    try:
-        async with AsyncSessionLocal() as session:
-
-            products = await get_admin_products(
-                session,
-                limit=100,
-            )
-
-    except Exception:
-        await callback.answer(
-            "❌ خطا در دریافت محصولات",
-            show_alert=True,
+    async with AsyncSessionLocal() as session:
+        products = await get_admin_products(
+            session,
+            limit=100,
         )
-        return
 
     featured_products = [
         product
@@ -1585,340 +1949,227 @@ async def admin_product_featured(
     ]
 
     if not featured_products:
-        text = (
-            "⭐ <b>محصولات ویژه</b>\n\n"
-            "هنوز محصول ویژه‌ای ثبت نشده است."
-        )
-
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="📋 لیست محصولات",
-                        callback_data="admin:product:list",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔙 مدیریت محصولات",
-                        callback_data="admin:products",
-                    ),
-                ],
-            ]
-        )
-
-    else:
-        text = (
-            "⭐ <b>محصولات ویژه</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-        )
-
-        buttons = []
-
-        for product in featured_products:
-
-            text += (
-                f"⭐ <b>{product.brand} "
-                f"{product.model}</b>\n"
-                f"💰 {format_money(product.base_price)}\n\n"
-            )
-
-            buttons.append(
-                [
-                    InlineKeyboardButton(
-                        text=(
-                            f"⭐ {product.brand} "
-                            f"{product.model}"
-                        ),
-                        callback_data=(
-                            f"admin:product:view:"
-                            f"{product.id}"
-                        ),
-                    )
+        await callback.message.edit_text(
+            "⭐ محصولات ویژه\n\n"
+            "در حال حاضر محصول ویژه‌ای ثبت نشده است.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="📋 لیست محصولات",
+                            callback_data="admin:product:list",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="🔙 مدیریت محصولات",
+                            callback_data="admin:products",
+                        )
+                    ],
                 ]
-            )
+            ),
+        )
 
-        buttons.append(
+        await callback.answer()
+        return
+
+    rows = []
+
+    for product in featured_products:
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text="🔙 مدیریت محصولات",
-                    callback_data="admin:products",
+                    text=(
+                        f"⭐ {product.brand} "
+                        f"{product.model}"
+                    ),
+                    callback_data=(
+                        f"admin:product:view:{product.id}"
+                    ),
                 )
             ]
         )
 
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=buttons
-        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🔙 مدیریت محصولات",
+                callback_data="admin:products",
+            )
+        ]
+    )
 
     await callback.message.edit_text(
-        text,
-        reply_markup=keyboard,
-        parse_mode="HTML",
+        "⭐ محصولات ویژه\n\n"
+        f"تعداد: {len(featured_products)}\n\n"
+        "محصول موردنظر را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=rows
+        ),
     )
 
     await callback.answer()
 
 
-# ============================================================
-# Inventory
-# ============================================================
+# ==========================================================
+# OTHER ADMIN SECTIONS
+# ==========================================================
 
 
 @router.callback_query(
-    lambda callback: callback.data == "admin:inventory"
+    F.data == "admin:inventory"
 )
 async def admin_inventory(
     callback: CallbackQuery,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
     await callback.message.edit_text(
-        "📦 <b>مدیریت موجودی</b>\n\n"
-        "آمار موجودی در داشبورد به دیتابیس متصل است.\n\n"
-        "🚧 مدیریت واحدهای موجودی در مرحله بعد اضافه می‌شود.",
+        "📦 مدیریت موجودی\n\n"
+        "این بخش در مرحله بعد به Variant و "
+        "Inventory متصل می‌شود.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📊 داشبورد",
-                        callback_data="admin:dashboard",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
                         text="🔙 پنل مدیریت",
                         callback_data="admin:panel",
-                    ),
-                ],
+                    )
+                ]
             ]
         ),
-        parse_mode="HTML",
     )
 
     await callback.answer()
 
 
-# ============================================================
-# Orders
-# ============================================================
-
-
 @router.callback_query(
-    lambda callback: callback.data == "admin:orders"
+    F.data == "admin:orders"
 )
 async def admin_orders(
     callback: CallbackQuery,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
     await callback.message.edit_text(
-        "🛒 <b>مدیریت سفارش‌ها</b>\n\n"
-        "آمار سفارش‌ها به دیتابیس متصل است.\n\n"
-        "🚧 مدیریت کامل سفارش‌ها در مرحله بعد اضافه می‌شود.",
+        "🛒 مدیریت سفارش‌ها\n\n"
+        "این بخش در مرحله بعد تکمیل می‌شود.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📊 داشبورد",
-                        callback_data="admin:dashboard",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
                         text="🔙 پنل مدیریت",
                         callback_data="admin:panel",
-                    ),
-                ],
+                    )
+                ]
             ]
         ),
-        parse_mode="HTML",
     )
 
     await callback.answer()
 
 
-# ============================================================
-# Customers
-# ============================================================
-
-
 @router.callback_query(
-    lambda callback: callback.data == "admin:customers"
+    F.data == "admin:customers"
 )
 async def admin_customers(
     callback: CallbackQuery,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
     await callback.message.edit_text(
-        "👥 <b>مدیریت مشتریان</b>\n\n"
-        "تعداد مشتریان از دیتابیس دریافت می‌شود.\n\n"
-        "🚧 لیست و مدیریت مشتریان در مرحله بعد اضافه می‌شود.",
+        "👥 مشتریان\n\n"
+        "این بخش در مرحله بعد تکمیل می‌شود.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📊 داشبورد",
-                        callback_data="admin:dashboard",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
                         text="🔙 پنل مدیریت",
                         callback_data="admin:panel",
-                    ),
-                ],
+                    )
+                ]
             ]
         ),
-        parse_mode="HTML",
     )
 
     await callback.answer()
 
 
-# ============================================================
-# Prices
-# ============================================================
-
-
 @router.callback_query(
-    lambda callback: callback.data == "admin:prices"
+    F.data == "admin:prices"
 )
 async def admin_prices(
     callback: CallbackQuery,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
 
     await callback.message.edit_text(
-        "💰 <b>مدیریت قیمت‌ها</b>\n\n"
-        "قیمت پایه محصولات از دیتابیس خوانده می‌شود.\n\n"
-        "🚧 ویرایش قیمت و تاریخچه قیمت در مرحله بعد اضافه می‌شود.",
+        "💰 مدیریت قیمت‌ها\n\n"
+        "تاریخچه تغییر قیمت‌ها در CRUD محصولات "
+        "ثبت می‌شود.\n\n"
+        "گزارش کامل قیمت‌ها در مرحله بعد اضافه می‌شود.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📊 داشبورد",
-                        callback_data="admin:dashboard",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
                         text="🔙 پنل مدیریت",
                         callback_data="admin:panel",
-                    ),
-                ],
+                    )
+                ]
             ]
         ),
-        parse_mode="HTML",
     )
 
     await callback.answer()
 
 
-# ============================================================
-# Sales Statistics
-# ============================================================
-
-
 @router.callback_query(
-    lambda callback: callback.data == "admin:stats"
+    F.data == "admin:stats"
 )
 async def admin_stats(
     callback: CallbackQuery,
-) -> None:
-
+):
     if not is_admin(callback.from_user.id):
         await callback.answer(
-            "⛔ دسترسی غیرمجاز",
+            "⛔ دسترسی غیرمجاز.",
             show_alert=True,
         )
         return
-
-    try:
-        async with AsyncSessionLocal() as session:
-            dashboard = await get_admin_dashboard(
-                session
-            )
-
-    except Exception:
-        await callback.answer(
-            "❌ خطا در دریافت آمار فروش",
-            show_alert=True,
-        )
-        return
-
-    sales = dashboard.get("sales", {})
-    orders = dashboard.get("orders", {})
-
-    text = (
-        "📈 <b>آمار فروش VIRA MOBILE</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-
-        "💰 <b>فروش</b>\n"
-        f"├ امروز: <b>{format_money(sales.get('today_sales', 0))}</b>\n"
-        f"├ کل: <b>{format_money(sales.get('total_sales', 0))}</b>\n"
-        f"├ سفارش موفق امروز: <b>{format_number(sales.get('today_orders', 0))}</b>\n"
-        f"└ سفارش موفق کل: <b>{format_number(sales.get('successful_orders', 0))}</b>\n\n"
-
-        "🛒 <b>سفارش‌ها</b>\n"
-        f"├ در انتظار: <b>{format_number(orders.get('pending', 0))}</b>\n"
-        f"├ پرداخت شده: <b>{format_number(orders.get('paid', 0))}</b>\n"
-        f"├ پردازش: <b>{format_number(orders.get('processing', 0))}</b>\n"
-        f"├ ارسال شده: <b>{format_number(orders.get('shipped', 0))}</b>\n"
-        f"└ تحویل شده: <b>{format_number(orders.get('delivered', 0))}</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
 
     await callback.message.edit_text(
-        text,
+        "📈 آمار فروش\n\n"
+        "سیستم آمار فروش پس از تکمیل سفارش‌ها "
+        "و موجودی فعال خواهد شد.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="🔄 بروزرسانی",
-                        callback_data="admin:stats",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="📊 داشبورد",
-                        callback_data="admin:dashboard",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
                         text="🔙 پنل مدیریت",
                         callback_data="admin:panel",
-                    ),
-                ],
+                    )
+                ]
             ]
         ),
-        parse_mode="HTML",
     )
 
     await callback.answer()
