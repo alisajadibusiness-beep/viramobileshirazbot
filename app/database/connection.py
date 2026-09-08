@@ -11,19 +11,13 @@ from app.config import settings
 
 
 class Base(DeclarativeBase):
-    """
-    Base class for all SQLAlchemy models.
-    """
-
     pass
 
 
 def normalize_database_url(url: str) -> str:
     """
-    Normalize common PostgreSQL connection strings
-    for SQLAlchemy async usage.
+    Normalize database URLs for SQLAlchemy async drivers.
     """
-
     if url.startswith("postgres://"):
         return url.replace(
             "postgres://",
@@ -60,9 +54,8 @@ AsyncSessionLocal = async_sessionmaker(
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
-    FastAPI database dependency.
+    Provide an async database session.
     """
-
     async with AsyncSessionLocal() as session:
         try:
             yield session
@@ -72,11 +65,21 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """
-    Create database tables if they don't exist.
+    Import all SQLAlchemy models before create_all()
+    so their tables are registered in Base.metadata.
     """
 
-    # Import models so SQLAlchemy knows about them.
-    from app.database import models  # noqa: F401
+    # Main VIRA MOBILE models
+    from app.database import models
+
+    # Smart Pricing / AI purchase expert models
+    from app.services.smart_pricing import models as smart_pricing_models
+
+    # Keep imports alive and explicitly registered.
+    _ = (
+        models,
+        smart_pricing_models,
+    )
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -84,7 +87,6 @@ async def init_db() -> None:
 
 async def close_db() -> None:
     """
-    Dispose database engine.
+    Close the database engine.
     """
-
     await engine.dispose()
