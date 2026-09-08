@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: vira-mobile
+    runtime: python
+    region: frankfurt
+
+    plan: free
+
+    branch: main
+
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    healthCheckPath: /health
+
+    autoDeploy: true
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.11
+
+      - key: APP_NAME
+        value: VIRA MOBILE
+
+      - key: APP_VERSION
+        value: 1.0.0
+
+      - key: ENVIRONMENT
+        value: production
+
+      - key: BOT_TOKEN
+        sync: false
+
+      - key: ADMIN_ID
+        sync: false
+
+      - key: SECRET_KEY
+        sync: false
+
+      - key: DATABASE_URL
+        sync: false
+
+      - key: WEBHOOK_URL
+        sync: false
