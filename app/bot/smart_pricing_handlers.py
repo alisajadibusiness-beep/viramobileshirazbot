@@ -375,7 +375,10 @@ def format_result(data: dict) -> str:
     )
 
 
-async def cancel_flow(message: Message, state: FSMContext) -> None:
+async def cancel_flow(
+    message: Message,
+    state: FSMContext,
+) -> None:
     await state.clear()
 
     await message.answer(
@@ -389,7 +392,10 @@ async def cancel_flow(message: Message, state: FSMContext) -> None:
 # ============================================================
 
 @router.message(F.text == "📱 فروش گوشی")
-async def start_smart_pricing(message: Message, state: FSMContext) -> None:
+async def start_smart_pricing(
+    message: Message,
+    state: FSMContext,
+) -> None:
     await state.clear()
     await state.set_state(SmartPricingStates.waiting_brand)
 
@@ -594,8 +600,13 @@ async def receive_battery(
         )
         return
 
-    await state.update_data(battery_percent=battery)
-    await state.set_state(SmartPricingStates.waiting_appearance)
+    await state.update_data(
+        battery_percent=battery,
+    )
+
+    await state.set_state(
+        SmartPricingStates.waiting_appearance
+    )
 
     await message.answer(
         "📱 وضعیت ظاهری گوشی را انتخاب کن:",
@@ -628,6 +639,7 @@ async def receive_appearance(
     await state.update_data(
         appearance_condition=condition,
     )
+
     await state.set_state(
         SmartPricingStates.waiting_technical
     )
@@ -663,6 +675,7 @@ async def receive_technical(
     await state.update_data(
         technical_condition=condition,
     )
+
     await state.set_state(
         SmartPricingStates.waiting_repair
     )
@@ -698,6 +711,7 @@ async def receive_repair(
     await state.update_data(
         repair_status=repair,
     )
+
     await state.set_state(
         SmartPricingStates.waiting_parts
     )
@@ -733,6 +747,7 @@ async def receive_parts(
     await state.update_data(
         parts_status=parts,
     )
+
     await state.set_state(
         SmartPricingStates.waiting_registration
     )
@@ -768,6 +783,7 @@ async def receive_registration(
     await state.update_data(
         registration_status=registration,
     )
+
     await state.set_state(
         SmartPricingStates.waiting_box
     )
@@ -800,7 +816,10 @@ async def receive_box(
         )
         return
 
-    await state.update_data(has_box=value)
+    await state.update_data(
+        has_box=value,
+    )
+
     await state.set_state(
         SmartPricingStates.waiting_accessories
     )
@@ -836,6 +855,7 @@ async def receive_accessories(
     await state.update_data(
         has_accessories=value,
     )
+
     await state.set_state(
         SmartPricingStates.waiting_market_price
     )
@@ -989,9 +1009,12 @@ async def submit_evaluation(
         await state.clear()
         return
 
-    await callback.message.edit_reply_markup(
-        reply_markup=None,
-    )
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=None,
+        )
+    except Exception:
+        pass
 
     await callback.message.answer(
         "📨 <b>درخواست کارشناسی ارسال شد.</b>\n\n"
@@ -1027,15 +1050,3 @@ async def cancel_evaluation(
     )
 
     await callback.answer("لغو شد.")
-
-
-# ============================================================
-# Global cancellation while in FSM
-# ============================================================
-
-@router.message(SmartPricingStates, F.text == "❌ لغو کارشناسی")
-async def global_smart_pricing_cancel(
-    message: Message,
-    state: FSMContext,
-) -> None:
-    await cancel_flow(message, state)
