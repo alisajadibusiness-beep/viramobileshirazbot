@@ -3,28 +3,22 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from contextlib import asynccontextmanager
 
 import uvicorn
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from app.bot.admin_handlers import router as admin_router
 from app.bot.handlers import router as bot_router
-from app.bot.smart_pricing_handlers import (
-    router as smart_pricing_router,
-)
+from app.bot.smart_pricing_handlers import router as smart_pricing_router
 from app.bot.smart_pricing_admin_handlers import (
     router as smart_pricing_admin_router,
 )
 from app.config import settings
 from app.database.connection import close_db, init_db
 
-
-# ============================================================
-# LOGGING
-# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,26 +33,12 @@ logging.basicConfig(
 logger = logging.getLogger("vira_mobile")
 
 
-# ============================================================
-# GLOBAL BOT STATE
-# ============================================================
-
 bot: Bot | None = None
 dp: Dispatcher | None = None
 polling_task: asyncio.Task | None = None
 
 
-# ============================================================
-# TELEGRAM COMMANDS
-# ============================================================
-
-async def setup_bot_commands(
-    current_bot: Bot,
-) -> None:
-    """
-    Configure Telegram bot commands.
-    """
-
+async def setup_bot_commands(current_bot: Bot) -> None:
     commands = [
         BotCommand(
             command="start",
@@ -73,18 +53,10 @@ async def setup_bot_commands(
     await current_bot.set_my_commands(commands)
 
 
-# ============================================================
-# TELEGRAM POLLING
-# ============================================================
-
 async def start_polling(
     current_bot: Bot,
     current_dp: Dispatcher,
 ) -> None:
-    """
-    Start Telegram polling.
-    """
-
     try:
         logger.info(
             "Starting Telegram bot polling..."
@@ -109,11 +81,7 @@ async def start_polling(
         )
 
 
-# ============================================================
-# APPLICATION LIFESPAN
-# ============================================================
-
-@asynccontextmanager
+@contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     global bot
     global dp
@@ -124,9 +92,9 @@ async def lifespan(app: FastAPI):
         settings.app_name,
     )
 
-    # --------------------------------------------------------
+    # ======================================================
     # DATABASE
-    # --------------------------------------------------------
+    # ======================================================
 
     try:
         await init_db()
@@ -141,45 +109,41 @@ async def lifespan(app: FastAPI):
         )
         raise
 
-    # --------------------------------------------------------
+    # ======================================================
     # TELEGRAM BOT
-    # --------------------------------------------------------
+    # ======================================================
 
     if not settings.bot_token:
 
-        logger.warning(
+        logger.error(
             "BOT_TOKEN is not configured. "
-            "Telegram bot polling will not start."
+            "Telegram bot polling will NOT start."
         )
 
     else:
 
         bot = Bot(
-            token=settings.bot_token,
+            token=settings.bot_token
         )
 
         dp = Dispatcher()
 
-        # ====================================================
-        # ROUTER ORDER
-        # ====================================================
+        # --------------------------------------------------
+        # ROUTERS
+        # --------------------------------------------------
 
-        # 1. Main Admin
         dp.include_router(
             admin_router
         )
 
-        # 2. Smart Pricing Admin
         dp.include_router(
             smart_pricing_admin_router
         )
 
-        # 3. Smart Pricing Customer
         dp.include_router(
             smart_pricing_router
         )
 
-        # 4. General Bot
         dp.include_router(
             bot_router
         )
@@ -188,11 +152,20 @@ async def lifespan(app: FastAPI):
             "All Telegram routers registered successfully."
         )
 
-        # ----------------------------------------------------
-        # BOT COMMANDS
-        # ----------------------------------------------------
+        # --------------------------------------------------
+        # TELEGRAM AUTHENTICATION
+        # --------------------------------------------------
 
         try:
+
+            me = await bot.get_me()
+
+            logger.info(
+                "Telegram authentication successful: "
+                "@%s (id=%s)",
+                me.username,
+                me.id,
+            )
 
             await setup_bot_commands(
                 bot
@@ -205,42 +178,51 @@ async def lifespan(app: FastAPI):
         except Exception:
 
             logger.exception(
-                "Failed to configure Telegram bot commands."
+                "Telegram authentication/command setup failed. "
+                "Check BOT_TOKEN in Render Environment Variables."
             )
 
-        # ----------------------------------------------------
-        # START POLLING
-        # ----------------------------------------------------
+            try:
+                await bot.session.close()
+            except Exception:
+                logger.exception(
+                    "Failed to close Telegram bot session."
+                )
 
-        polling_task = asyncio.create_task(
-            start_polling(
-                bot,
-                dp,
+            bot = None
+            dp = None
+
+        else:
+
+            # ------------------------------------------------
+            # START POLLING
+            # ------------------------------------------------
+
+            polling_task = asyncio.create_task(
+                start_polling(
+                    bot,
+                    dp,
+                )
             )
-        )
 
-        logger.info(
-            "Telegram bot polling task started."
-        )
+            logger.info(
+                "Telegram bot polling task started."
+            )
 
-    # ========================================================
+    # ======================================================
     # APPLICATION RUNNING
-    # ========================================================
+    # ======================================================
 
     yield
 
-    # ========================================================
+    # ======================================================
     # SHUTDOWN
-    # ========================================================
+    # ======================================================
 
     logger.info(
         "Shutting down %s...",
         settings.app_name,
     )
-
-    # --------------------------------------------------------
-    # STOP POLLING
-    # --------------------------------------------------------
 
     if polling_task is not None:
 
@@ -253,10 +235,6 @@ async def lifespan(app: FastAPI):
             await polling_task
 
         polling_task = None
-
-    # --------------------------------------------------------
-    # CLOSE TELEGRAM BOT
-    # --------------------------------------------------------
 
     if bot is not None:
 
@@ -273,10 +251,6 @@ async def lifespan(app: FastAPI):
         bot = None
 
     dp = None
-
-    # --------------------------------------------------------
-    # CLOSE DATABASE
-    # --------------------------------------------------------
 
     try:
 
@@ -298,9 +272,9 @@ async def lifespan(app: FastAPI):
     )
 
 
-# ============================================================
-# FASTAPI APPLICATION
-# ============================================================
+# ==========================================================
+# FASTAPI
+# ==========================================================
 
 app = FastAPI(
     title=settings.app_name,
@@ -312,98 +286,44 @@ app = FastAPI(
 )
 
 
-# ============================================================
-# ROOT ENDPOINT
-# ============================================================
+# ==========================================================
+# ROOT
+# GET + HEAD
+# ==========================================================
 
 @app.api_route(
     "/",
-    methods=["GET", "HEAD"],
+    methods=[
+        "GET",
+        "HEAD",
+    ],
 )
-async def root() -> dict:
-    """
-    Main application endpoint.
+async def root() -> JSONResponse:
 
-    Supports:
-    GET
-    HEAD
-
-    This allows monitoring services such as
-    UptimeRobot to use HEAD requests.
-    """
-
-    return {
-        "success": True,
-        "app": settings.app_name,
-        "version": settings.app_version,
-        "environment": settings.environment,
-        "status": "running",
-    }
+    return JSONResponse(
+        {
+            "success": True,
+            "app": settings.app_name,
+            "version": settings.app_version,
+            "environment": settings.environment,
+            "status": "running",
+        }
+    )
 
 
-# ============================================================
-# HEALTH ENDPOINT
-# ============================================================
+# ==========================================================
+# HEALTH
+# GET + HEAD
+# ==========================================================
 
 @app.api_route(
     "/health",
-    methods=["GET", "HEAD"],
+    methods=[
+        "GET",
+        "HEAD",
+    ],
 )
-async def health() -> dict:
-    """
-    Health check endpoint.
-
-    Supports both GET and HEAD so services such as
-    UptimeRobot can monitor the application using HEAD.
-    """
-
-    return {
-        "status": "ok",
-        "app": settings.app_name,
-        "version": settings.app_version,
-    }
-
-
-# ============================================================
-# API ROOT
-# ============================================================
-
-@app.api_route(
-    "/api",
-    methods=["GET", "HEAD"],
-)
-async def api_root() -> dict:
-    """
-    API information endpoint.
-    """
-
-    return {
-        "success": True,
-        "name": settings.app_name,
-        "version": settings.app_version,
-        "services": {
-            "telegram_bot": bool(
-                settings.bot_token
-            ),
-            "database": True,
-            "smart_pricing": True,
-            "admin_panel": True,
-        },
-    }
-
-
-# ============================================================
-# API STATUS
-# ============================================================
-
-@app.api_route(
-    "/api/status",
-    methods=["GET", "HEAD"],
-)
-async def api_status() -> dict:
-    """
-    Application status endpoint.
-    """
+async def health() -> JSONResponse:
 
     telegram_status = (
         "running"
@@ -415,21 +335,88 @@ async def api_status() -> dict:
         else "stopped"
     )
 
-    return {
-        "success": True,
-        "app": settings.app_name,
-        "version": settings.app_version,
-        "environment": settings.environment,
-        "telegram_bot": telegram_status,
-        "database": "configured",
-        "smart_pricing": "enabled",
-        "admin_panel": "enabled",
-    }
+    return JSONResponse(
+        {
+            "status": "ok",
+            "app": settings.app_name,
+            "version": settings.app_version,
+            "telegram_bot": telegram_status,
+        }
+    )
 
 
-# ============================================================
-# LOCAL EXECUTION
-# ============================================================
+# ==========================================================
+# API
+# GET + HEAD
+# ==========================================================
+
+@app.api_route(
+    "/api",
+    methods=[
+        "GET",
+        "HEAD",
+    ],
+)
+async def api_root() -> JSONResponse:
+
+    return JSONResponse(
+        {
+            "success": True,
+            "name": settings.app_name,
+            "version": settings.app_version,
+            "services": {
+                "telegram_bot": (
+                    bot is not None
+                ),
+                "database": True,
+                "smart_pricing": True,
+                "admin_panel": True,
+            },
+        }
+    )
+
+
+# ==========================================================
+# API STATUS
+# GET + HEAD
+# ==========================================================
+
+@app.api_route(
+    "/api/status",
+    methods=[
+        "GET",
+        "HEAD",
+    ],
+)
+async def api_status() -> JSONResponse:
+
+    telegram_status = (
+        "running"
+        if (
+            bot is not None
+            and polling_task is not None
+            and not polling_task.done()
+        )
+        else "stopped"
+    )
+
+    return JSONResponse(
+        {
+            "success": True,
+            "app": settings.app_name,
+            "version": settings.app_version,
+            "environment": settings.environment,
+            "telegram_bot": telegram_status,
+            "database": "configured",
+            "smart_pricing": "enabled",
+            "admin_panel": "enabled",
+        }
+    )
+
+
+# ==========================================================
+# LOCAL RUN
+# ==========================================================
 
 if __name__ == "__main__":
 
