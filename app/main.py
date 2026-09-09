@@ -13,6 +13,9 @@ from fastapi import FastAPI
 from app.bot.admin_handlers import router as admin_router
 from app.bot.handlers import router as bot_router
 from app.bot.smart_pricing_handlers import router as smart_pricing_router
+from app.bot.smart_pricing_admin_handlers import (
+    router as smart_pricing_admin_router,
+)
 from app.config import settings
 from app.database.connection import close_db, init_db
 
@@ -35,7 +38,7 @@ logger = logging.getLogger("vira_mobile")
 
 
 # ============================================================
-# Global objects
+# Global bot state
 # ============================================================
 
 bot: Bot | None = None
@@ -44,14 +47,10 @@ polling_task: asyncio.Task | None = None
 
 
 # ============================================================
-# Bot commands
+# Telegram commands
 # ============================================================
 
 async def setup_bot_commands(current_bot: Bot) -> None:
-    """
-    Register Telegram bot commands.
-    """
-
     commands = [
         BotCommand(
             command="start",
@@ -67,17 +66,13 @@ async def setup_bot_commands(current_bot: Bot) -> None:
 
 
 # ============================================================
-# Polling
+# Telegram polling
 # ============================================================
 
 async def start_polling(
     current_bot: Bot,
     current_dp: Dispatcher,
 ) -> None:
-    """
-    Start aiogram polling.
-    """
-
     try:
         logger.info("Starting Telegram bot polling...")
 
@@ -106,7 +101,10 @@ async def lifespan(app: FastAPI):
     global dp
     global polling_task
 
-    logger.info("Starting %s...", settings.app_name)
+    logger.info(
+        "Starting %s...",
+        settings.app_name,
+    )
 
     # --------------------------------------------------------
     # Database
@@ -114,7 +112,10 @@ async def lifespan(app: FastAPI):
 
     try:
         await init_db()
-        logger.info("Database initialized successfully.")
+
+        logger.info(
+            "Database initialized successfully."
+        )
 
     except Exception:
         logger.exception(
@@ -123,7 +124,7 @@ async def lifespan(app: FastAPI):
         raise
 
     # --------------------------------------------------------
-    # Bot initialization
+    # Telegram
     # --------------------------------------------------------
 
     if not settings.bot_token:
@@ -139,25 +140,28 @@ async def lifespan(app: FastAPI):
 
         dp = Dispatcher()
 
-        # ----------------------------------------------------
-        # Router order
-        #
-        # 1. Admin
-        # 2. Smart Pricing
-        # 3. General Bot
-        #
-        # Smart Pricing must be registered before the generic
-        # bot handlers so its FSM handlers receive the messages.
-        # ----------------------------------------------------
-
+        # Admin
         dp.include_router(admin_router)
 
-        dp.include_router(smart_pricing_router)
+        # Smart Pricing Admin
+        dp.include_router(
+            smart_pricing_admin_router
+        )
 
+        # Customer Smart Pricing
+        dp.include_router(
+            smart_pricing_router
+        )
+
+        # General bot handlers
         dp.include_router(bot_router)
 
         try:
             await setup_bot_commands(bot)
+
+            logger.info(
+                "Telegram bot commands configured."
+            )
 
         except Exception:
             logger.exception(
@@ -176,23 +180,19 @@ async def lifespan(app: FastAPI):
         )
 
     # --------------------------------------------------------
-    # Application is ready
+    # Application running
     # --------------------------------------------------------
 
     yield
 
-    # ========================================================
+    # --------------------------------------------------------
     # Shutdown
-    # ========================================================
+    # --------------------------------------------------------
 
     logger.info(
         "Shutting down %s...",
         settings.app_name,
     )
-
-    # --------------------------------------------------------
-    # Stop polling
-    # --------------------------------------------------------
 
     if polling_task is not None:
         polling_task.cancel()
@@ -204,10 +204,6 @@ async def lifespan(app: FastAPI):
             await polling_task
 
         polling_task = None
-
-    # --------------------------------------------------------
-    # Close bot
-    # --------------------------------------------------------
 
     if bot is not None:
         try:
@@ -222,12 +218,9 @@ async def lifespan(app: FastAPI):
 
     dp = None
 
-    # --------------------------------------------------------
-    # Close database
-    # --------------------------------------------------------
-
     try:
         await close_db()
+
         logger.info(
             "Database connection closed."
         )
@@ -244,7 +237,7 @@ async def lifespan(app: FastAPI):
 
 
 # ============================================================
-# FastAPI application
+# FastAPI
 # ============================================================
 
 app = FastAPI(
@@ -273,7 +266,7 @@ async def root() -> dict:
 
 
 # ============================================================
-# Health
+# Health Check
 # ============================================================
 
 @app.get("/health")
@@ -286,7 +279,7 @@ async def health() -> dict:
 
 
 # ============================================================
-# API information
+# API Root
 # ============================================================
 
 @app.get("/api")
@@ -305,14 +298,18 @@ async def api_root() -> dict:
 
 
 # ============================================================
-# Application status
+# API Status
 # ============================================================
 
 @app.get("/api/status")
 async def api_status() -> dict:
     telegram_status = (
         "running"
-        if bot is not None and polling_task is not None
+        if (
+            bot is not None
+            and polling_task is not None
+            and not polling_task.done()
+        )
         else "stopped"
     )
 
@@ -329,7 +326,7 @@ async def api_status() -> dict:
 
 
 # ============================================================
-# Uvicorn entry point
+# Local execution
 # ============================================================
 
 if __name__ == "__main__":
