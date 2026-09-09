@@ -10,15 +10,22 @@ from aiogram.types import BotCommand
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.api.products import router as products_api_router
+
 from app.bot.admin_handlers import router as admin_router
 from app.bot.handlers import router as bot_router
 from app.bot.smart_pricing_handlers import router as smart_pricing_router
 from app.bot.smart_pricing_admin_handlers import (
     router as smart_pricing_admin_router,
 )
+
 from app.config import settings
 from app.database.connection import close_db, init_db
 
+
+# ==========================================================
+# LOGGING
+# ==========================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,12 +40,23 @@ logging.basicConfig(
 logger = logging.getLogger("vira_mobile")
 
 
+# ==========================================================
+# GLOBAL BOT STATE
+# ==========================================================
+
 bot: Bot | None = None
 dp: Dispatcher | None = None
 polling_task: asyncio.Task | None = None
 
 
-async def setup_bot_commands(current_bot: Bot) -> None:
+# ==========================================================
+# TELEGRAM COMMANDS
+# ==========================================================
+
+async def setup_bot_commands(
+    current_bot: Bot,
+) -> None:
+
     commands = [
         BotCommand(
             command="start",
@@ -50,14 +68,22 @@ async def setup_bot_commands(current_bot: Bot) -> None:
         ),
     ]
 
-    await current_bot.set_my_commands(commands)
+    await current_bot.set_my_commands(
+        commands
+    )
 
+
+# ==========================================================
+# TELEGRAM POLLING
+# ==========================================================
 
 async def start_polling(
     current_bot: Bot,
     current_dp: Dispatcher,
 ) -> None:
+
     try:
+
         logger.info(
             "Starting Telegram bot polling..."
         )
@@ -70,19 +96,29 @@ async def start_polling(
         )
 
     except asyncio.CancelledError:
+
         logger.info(
             "Telegram polling cancelled."
         )
+
         raise
 
     except Exception:
+
         logger.exception(
             "Telegram polling stopped because of an error."
         )
 
 
+# ==========================================================
+# APPLICATION LIFESPAN
+# ==========================================================
+
 @contextlib.asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(
+    app: FastAPI,
+):
+
     global bot
     global dp
     global polling_task
@@ -97,6 +133,7 @@ async def lifespan(app: FastAPI):
     # ======================================================
 
     try:
+
         await init_db()
 
         logger.info(
@@ -104,9 +141,11 @@ async def lifespan(app: FastAPI):
         )
 
     except Exception:
+
         logger.exception(
             "Database initialization failed."
         )
+
         raise
 
     # ======================================================
@@ -128,9 +167,9 @@ async def lifespan(app: FastAPI):
 
         dp = Dispatcher()
 
-        # --------------------------------------------------
-        # ROUTERS
-        # --------------------------------------------------
+        # ==================================================
+        # TELEGRAM ROUTERS
+        # ==================================================
 
         dp.include_router(
             admin_router
@@ -152,9 +191,9 @@ async def lifespan(app: FastAPI):
             "All Telegram routers registered successfully."
         )
 
-        # --------------------------------------------------
+        # ==================================================
         # TELEGRAM AUTHENTICATION
-        # --------------------------------------------------
+        # ==================================================
 
         try:
 
@@ -183,8 +222,11 @@ async def lifespan(app: FastAPI):
             )
 
             try:
+
                 await bot.session.close()
+
             except Exception:
+
                 logger.exception(
                     "Failed to close Telegram bot session."
                 )
@@ -194,9 +236,9 @@ async def lifespan(app: FastAPI):
 
         else:
 
-            # ------------------------------------------------
-            # START POLLING
-            # ------------------------------------------------
+            # ==============================================
+            # START TELEGRAM POLLING
+            # ==============================================
 
             polling_task = asyncio.create_task(
                 start_polling(
@@ -224,6 +266,10 @@ async def lifespan(app: FastAPI):
         settings.app_name,
     )
 
+    # ======================================================
+    # STOP POLLING
+    # ======================================================
+
     if polling_task is not None:
 
         polling_task.cancel()
@@ -232,9 +278,14 @@ async def lifespan(app: FastAPI):
             asyncio.CancelledError,
             Exception,
         ):
+
             await polling_task
 
         polling_task = None
+
+    # ======================================================
+    # CLOSE TELEGRAM
+    # ======================================================
 
     if bot is not None:
 
@@ -251,6 +302,10 @@ async def lifespan(app: FastAPI):
         bot = None
 
     dp = None
+
+    # ======================================================
+    # CLOSE DATABASE
+    # ======================================================
 
     try:
 
@@ -273,7 +328,7 @@ async def lifespan(app: FastAPI):
 
 
 # ==========================================================
-# FASTAPI
+# FASTAPI APPLICATION
 # ==========================================================
 
 app = FastAPI(
@@ -283,6 +338,19 @@ app = FastAPI(
         "VIRA MOBILE API and Telegram Bot"
     ),
     lifespan=lifespan,
+)
+
+
+# ==========================================================
+# PRODUCTS API
+# ==========================================================
+
+app.include_router(
+    products_api_router
+)
+
+logger.info(
+    "Products API router registered successfully."
 )
 
 
@@ -346,7 +414,7 @@ async def health() -> JSONResponse:
 
 
 # ==========================================================
-# API
+# API ROOT
 # GET + HEAD
 # ==========================================================
 
@@ -371,6 +439,7 @@ async def api_root() -> JSONResponse:
                 "database": True,
                 "smart_pricing": True,
                 "admin_panel": True,
+                "products_api": True,
             },
         }
     )
@@ -410,6 +479,7 @@ async def api_status() -> JSONResponse:
             "database": "configured",
             "smart_pricing": "enabled",
             "admin_panel": "enabled",
+            "products_api": "enabled",
         }
     )
 
